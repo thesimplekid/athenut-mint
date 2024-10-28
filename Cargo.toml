@@ -1,0 +1,35 @@
+[package]
+name = "athenut-mint"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+anyhow = "1"
+axum = "0.6.20"
+clap = { version = "4.4.8", features = ["derive", "env", "default"] }
+bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
+bip39 = "2.0"
+cdk = { git = "https://github.com/thesimplekid/cdk.git", rev = "557208c5", default-features = false, features = ["mint"] }
+cdk-redb = { git = "https://github.com/thesimplekid/cdk.git", rev = "557208c5", default-features = false, features = ["mint"] }
+cdk-axum = { git = "https://github.com/thesimplekid/cdk.git", rev = "557208c5", default-features = false }
+cln-rpc = "0.2.0"
+config = { version = "0.13.3", features = ["toml"] }
+tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7.11", default-features = false }
+tower-http = { version = "0.4.4", features = ["cors"] }
+home = "0.5.5"
+serde = { version = "1", default-features = false, features = ["derive"] }
+futures = { version = "0.3.28", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "socks",
+]}
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+nostr-sdk = { version = "0.35.0", features = ["nip59"] }
+serde_json = "1.0.132"
