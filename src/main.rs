@@ -15,7 +15,7 @@ use cdk::mint::{FeeReserve, Mint};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{
     nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
-    MintVersion, Nuts, PaymentMethod, SecretKey,
+    MintVersion, Nuts, PaymentMethod,
 };
 use cdk::types::{LnKey, QuoteTTL};
 use cdk_redb::MintRedbDatabase;
@@ -232,18 +232,14 @@ async fn main() -> anyhow::Result<()> {
 
     let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
-    let cashu_secret_key = SecretKey::from_hex(settings.search_settings.cashu_secret_key)?;
-
     let mint_url = MintUrl::from_str(&settings.info.url)?;
     let info = athenut_mint::search_route_handlers::Info {
         mint: mint_url.clone(),
-        pubkey: cashu_secret_key.public_key(),
     };
 
     let search_settings = athenut_mint::search_route_handlers::Settings {
         kagi_auth_token: settings.search_settings.kagi_auth_token,
         mint_url,
-        cashu_secret_key,
     };
 
     let api_state = ApiState {

@@ -30,7 +30,6 @@ pub struct Cln {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchSettings {
-    pub cashu_secret_key: String,
     pub kagi_auth_token: String,
 }
 

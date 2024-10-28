@@ -10,7 +10,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{PublicKey as CashuPublicKey, SecretKey, TokenV4};
+use cdk::nuts::TokenV4;
 use cdk::util::unix_time;
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
@@ -200,14 +200,12 @@ struct Params {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub mint: MintUrl,
-    pub pubkey: CashuPublicKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub kagi_auth_token: String,
     pub mint_url: MintUrl,
-    pub cashu_secret_key: SecretKey,
 }
 
 #[derive(Clone)]
