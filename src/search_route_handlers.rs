@@ -36,10 +36,7 @@ async fn get_search(
 
     let token_amount = token.value().unwrap();
 
-    let token_mint = token.mint_url.clone();
-
-    if token_mint != state.settings.mint_url || token_amount != 1.into() {
-        // All proofs must be from trusted mints
+    if token_amount != 1.into() {
         return Err(StatusCode::PAYMENT_REQUIRED);
     }
 
@@ -67,66 +64,8 @@ async fn get_search(
 
     tracing::info!("Send: {}", unix_time() - time);
 
-    // if unclaimed_count >= 50 {
-    //     let wallet_clone = Arc::clone(&state.wallet);
-    //     let unclaimed_proofs_clone = Arc::clone(&state.unclaimed_proofs);
-    //     let secret_key_clone = state.settings.cashu_secret_key;
-    //     let notification_pubkey = state.settings.nostr_pubkey;
-    //     let nostr_relays = state.settings.nostr_relays.clone();
-
-    //     tokio::spawn(async move {
-    //         let mut proofs = unclaimed_proofs_clone.write().await;
-
-    //         let count_to_swap = if proofs.len() > 50 { 50 } else { proofs.len() };
-
-    //         let inputs_proofs = proofs.drain(..count_to_swap).collect();
-
-    //         let amount = {
-    //             let wallet = wallet_clone.lock().await;
-    //             match wallet
-    //                 .receive_proofs(
-    //                     inputs_proofs,
-    //                     SplitTarget::Value(1.into()),
-    //                     &[secret_key_clone],
-    //                     &[],
-    //                 )
-    //                 .await
-    //             {
-    //                 Ok(amount) => {
-    //                     tracing::info!("Swapped {}", amount);
-    //                     Some(amount)
-    //                 }
-    //                 Err(err) => {
-    //                     tracing::error!("Could not swap proofs: {}", err);
-    //                     None
-    //                 }
-    //             }
-    //         };
-
-    //         if let Some(amount) = amount {
-    //             let my_keys = Keys::generate();
-    //             let client = Client::new(my_keys);
-    //             let msg = format!("Athenut just redeamed: {} search tokens", amount);
-
-    //             for relay in nostr_relays {
-    //                 if let Err(err) = client.add_write_relay(&relay).await {
-    //                     tracing::error!("Could not add relay {}: {}", relay, err);
-    //                 }
-    //             }
-
-    //             client.connect().await;
-
-    //             if let Err(err) = client
-    //                 .send_private_msg(notification_pubkey, msg, None)
-    //                 .await
-    //             {
-    //                 tracing::error!("Could not send nostr notification: {}", err);
-    //             }
-    //         }
-    //     });
-    // }
-
     let time = unix_time();
+
     let response = state
         .reqwest_client
         .get("https://kagi.com/api/v0/search")
