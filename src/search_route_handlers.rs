@@ -108,10 +108,7 @@ async fn get_search(
         })
         .collect();
 
-    let results: Vec<SearchResult> = search_results
-        .into_iter()
-        .flat_map(|r| r.try_into())
-        .collect();
+    let results: Vec<SearchResult> = search_results.into_iter().map(|r| r.into()).collect();
 
     tracing::info!("Json time: {}", unix_time() - time);
     Ok(Json(results))
