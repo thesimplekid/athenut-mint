@@ -153,13 +153,13 @@ pub struct ApiState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KagiSearchResponse {
+struct KagiSearchResponse {
     meta: Meta,
     data: Vec<KagiSearchObject>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Meta {
+struct Meta {
     id: String,
     node: String,
     ms: u64,

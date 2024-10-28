@@ -2,7 +2,7 @@
   description = "CDK Flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -37,9 +37,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable.latest.default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
-        };
+        stable_toolchain = pkgs.rust-bin.stable.latest.default;
 
         # Common inputs
         envVars = { };
