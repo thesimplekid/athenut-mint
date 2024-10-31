@@ -10,9 +10,9 @@ axum = "0.6.20"
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = "2.0"
-cdk = { git = "https://github.com/thesimplekid/cdk.git", rev = "93e91d24", default-features = false, features = ["mint"] }
-cdk-redb = { git = "https://github.com/thesimplekid/cdk.git", rev = "93e91d24", default-features = false, features = ["mint"] }
-cdk-axum = { git = "https://github.com/thesimplekid/cdk.git", rev = "93e91d24", default-features = false }
+cdk = { git = "https://github.com/thesimplekid/cdk.git", rev = "1e1f098a6", default-features = false, features = ["mint"] }
+cdk-redb = { git = "https://github.com/thesimplekid/cdk.git", rev = "1e1f098a6", default-features = false, features = ["mint"] }
+cdk-axum = { git = "https://github.com/thesimplekid/cdk.git", rev = "1e1f098a6", default-features = false }
 cln-rpc = "0.2.0"
 config = { version = "0.13.3", features = ["toml"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
