@@ -233,6 +233,7 @@ dependencies = [
  "futures",
  "home",
  "nostr-sdk",
+ "redb",
  "reqwest",
  "serde",
  "serde_json",

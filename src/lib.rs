@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 pub mod cli;
 pub mod cln;
 pub mod config;
+pub mod db;
 pub mod search_route_handlers;
 
 pub fn work_dir() -> Result<PathBuf> {

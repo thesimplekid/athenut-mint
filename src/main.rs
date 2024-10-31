@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail};
 use athenut_mint::cli::CLIArgs;
 use athenut_mint::cln::Cln;
+use athenut_mint::db::Db;
 use athenut_mint::search_route_handlers::{search_router, ApiState};
 use athenut_mint::{config, expand_path, work_dir};
 use axum::Router;
@@ -232,6 +233,10 @@ async fn main() -> anyhow::Result<()> {
 
     let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
 
+    // Database for athenmint
+    let athenmint_db = work_dir.join("athenmint_search_api.redb");
+    let db = Db::new(&athenmint_db)?;
+
     let mint_url = MintUrl::from_str(&settings.info.url)?;
     let info = athenut_mint::search_route_handlers::Info {
         mint: mint_url.clone(),
@@ -247,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         mint: Arc::clone(&mint),
         settings: search_settings,
         reqwest_client: Client::new(),
+        db,
     };
 
     let search_router = search_router(api_state);

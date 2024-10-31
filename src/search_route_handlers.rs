@@ -17,6 +17,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
 
+use crate::db::{Db, SearchCount};
+
+async fn get_search_count(State(state): State<ApiState>) -> Result<Json<SearchCount>, StatusCode> {
+    let db = state.db;
+
+    let search_count = db
+        .get_search_count()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(search_count))
+}
+
 async fn get_info(State(state): State<ApiState>) -> Result<Json<Info>, StatusCode> {
     Ok(Json(state.info))
 }
@@ -99,6 +111,10 @@ async fn get_search(
         results.meta.node
     );
 
+    if let Err(err) = state.db.increment_search_count() {
+        tracing::error!("Could not update search counter: {}", err);
+    }
+
     let search_results: Vec<KagiSearchResult> = results
         .data
         .into_iter()
@@ -118,6 +134,7 @@ pub fn search_router(state: ApiState) -> Router {
     Router::new()
         .route("/info", get(get_info))
         .route("/search", get(get_search))
+        .route("/search_count", get(get_search_count))
         .layer(CorsLayer::very_permissive().allow_headers([
             AUTHORIZATION,
             CONTENT_TYPE,
@@ -150,6 +167,7 @@ pub struct ApiState {
     pub mint: Arc<Mint>,
     pub settings: Settings,
     pub reqwest_client: ReqwestClient,
+    pub db: Db,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
