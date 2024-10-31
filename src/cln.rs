@@ -532,7 +532,10 @@ fn cents_to_msats(cents: u64, btc_price_dollars: u64) -> Result<u64, Error> {
     // Formula: (cents * 100_000_000_000) / price_data.USD
     let msats = (cents as u128 * 100_000_000_000u128) / bitcoin_price_cents as u128;
 
-    Ok(msats as u64)
+    let rounded_sats = (msats + 999) / 1000;
+    let rounded_msats = rounded_sats * 1000;
+
+    Ok(rounded_msats as u64)
 }
 
 impl Cln {
