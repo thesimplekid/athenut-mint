@@ -616,7 +616,7 @@ dependencies = [
 [[package]]
 name = "cdk"
 version = "0.4.0"
-source = "git+https://github.com/thesimplekid/cdk.git?rev=01f28d8f#01f28d8f0cbb9dbacac25a7f3b3dc7af1cb66197"
+source = "git+https://github.com/thesimplekid/cdk.git?rev=a831b224e#a831b224e78d06f1dd629e9664f67da1bed5bf3c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -644,7 +644,7 @@ dependencies = [
 [[package]]
 name = "cdk-axum"
 version = "0.4.0"
-source = "git+https://github.com/thesimplekid/cdk.git?rev=01f28d8f#01f28d8f0cbb9dbacac25a7f3b3dc7af1cb66197"
+source = "git+https://github.com/thesimplekid/cdk.git?rev=a831b224e#a831b224e78d06f1dd629e9664f67da1bed5bf3c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -661,7 +661,7 @@ dependencies = [
 [[package]]
 name = "cdk-redb"
 version = "0.4.0"
-source = "git+https://github.com/thesimplekid/cdk.git?rev=01f28d8f#01f28d8f0cbb9dbacac25a7f3b3dc7af1cb66197"
+source = "git+https://github.com/thesimplekid/cdk.git?rev=a831b224e#a831b224e78d06f1dd629e9664f67da1bed5bf3c"
 dependencies = [
  "async-trait",
  "cdk",
