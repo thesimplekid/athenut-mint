@@ -119,24 +119,16 @@ async fn main() -> anyhow::Result<()> {
     )
     .ok_or(anyhow!("cln socket not defined"))?;
 
-    let cln = Arc::new(
-        Cln::new(
-            cln_socket,
-            fee_reserve,
-            MintMethodSettings::default(),
-            MeltMethodSettings::default(),
-        )
-        .await?,
-    );
+    let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
 
     let search_unit = CurrencyUnit::from_str("XSR")?;
-    ln_backends.insert(LnKey::new(search_unit, PaymentMethod::Bolt11), cln);
-    supported_units.insert(search_unit, (0, 1));
+    ln_backends.insert(LnKey::new(search_unit.clone(), PaymentMethod::Bolt11), cln);
+    supported_units.insert(search_unit.clone(), (0, 1));
 
     let nut04_settings = nut04::Settings::new(
         vec![MintMethodSettings {
             method: PaymentMethod::Bolt11,
-            unit: search_unit,
+            unit: search_unit.clone(),
             min_amount: Some(1.into()),
             max_amount: Some(100.into()),
             description: true,
@@ -147,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
     let nut05_settings = nut05::Settings::new(
         vec![MeltMethodSettings {
             method: PaymentMethod::Bolt11,
-            unit: search_unit,
+            unit: search_unit.clone(),
             min_amount: None,
             max_amount: None,
         }],
