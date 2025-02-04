@@ -28,8 +28,6 @@ use tracing_subscriber::EnvFilter;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_QUOTE_TTL_SECS: u64 = 1800;
-const DEFAULT_CACHE_TTL_SECS: u64 = 1800;
-const DEFAULT_CACHE_TTI_SECS: u64 = 1800;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -214,16 +212,7 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
 
-    let cache_ttl = settings
-        .info
-        .seconds_to_cache_requests_for
-        .unwrap_or(DEFAULT_CACHE_TTL_SECS);
-    let cache_tti = settings
-        .info
-        .seconds_to_extend_cache_by
-        .unwrap_or(DEFAULT_CACHE_TTI_SECS);
-
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint), cache_ttl, cache_tti).await?;
+    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint)).await?;
 
     // Database for athenmint
     let athenmint_db = work_dir.join("athenmint_search_api.redb");
