@@ -101,52 +101,7 @@ async fn main() -> anyhow::Result<()> {
         percent_fee_reserve: relative_ln_fee,
     };
 
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    > = HashMap::new();
-
-    let mut supported_units = HashMap::new();
-
-    let cln_socket = expand_path(
-        settings
-            .cln
-            .rpc_path
-            .to_str()
-            .ok_or(anyhow!("cln socket not defined"))?,
-    )
-    .ok_or(anyhow!("cln socket not defined"))?;
-
-    let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
-
-    let search_unit = CurrencyUnit::from_str("XSR")?;
-    ln_backends.insert(LnKey::new(search_unit.clone(), PaymentMethod::Bolt11), cln);
-    supported_units.insert(search_unit.clone(), (0, 1));
-
-    let nut04_settings = nut04::Settings::new(
-        vec![MintMethodSettings {
-            method: PaymentMethod::Bolt11,
-            unit: search_unit.clone(),
-            min_amount: Some(1.into()),
-            max_amount: Some(100.into()),
-            description: true,
-        }],
-        false,
-    );
-
-    let nut05_settings = nut05::Settings::new(
-        vec![MeltMethodSettings {
-            method: PaymentMethod::Bolt11,
-            unit: search_unit.clone(),
-            min_amount: None,
-            max_amount: None,
-        }],
-        true,
-    );
-
-    let nuts = Nuts::new()
-        .nut04(nut04_settings)
-        .nut05(nut05_settings)
+    let mut nuts = Nuts::new()
         .nut07(true)
         .nut08(true)
         .nut09(true)
@@ -154,6 +109,55 @@ async fn main() -> anyhow::Result<()> {
         .nut11(true)
         .nut12(true)
         .nut14(true);
+
+    let mut custom_ders = HashMap::new();
+
+    let mut supported_units = HashMap::new();
+    let search_unit = CurrencyUnit::from_str("XSR")?;
+    let mut ln_backends: HashMap<
+        LnKey,
+        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
+    > = HashMap::new();
+
+    if settings.enable_ln {
+        let cln_socket = expand_path(
+            settings
+                .cln
+                .rpc_path
+                .to_str()
+                .ok_or(anyhow!("cln socket not defined"))?,
+        )
+        .ok_or(anyhow!("cln socket not defined"))?;
+
+        let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
+
+        ln_backends.insert(LnKey::new(search_unit.clone(), PaymentMethod::Bolt11), cln);
+        supported_units.insert(search_unit.clone(), (0, 1));
+
+        let nut04_settings = nut04::Settings::new(
+            vec![MintMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: search_unit.clone(),
+                min_amount: Some(1.into()),
+                max_amount: Some(100.into()),
+                description: true,
+            }],
+            false,
+        );
+
+        nuts = nuts.nut04(nut04_settings);
+
+        let nut05_settings = nut05::Settings::new(
+            vec![MeltMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: search_unit.clone(),
+                min_amount: None,
+                max_amount: None,
+            }],
+            true,
+        );
+        nuts = nuts.nut05(nut05_settings);
+    }
 
     let mut mint_info = MintInfo::new()
         .name(settings.mint_info.name)
@@ -189,11 +193,8 @@ async fn main() -> anyhow::Result<()> {
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
     ]);
 
-    let mut custom_ders = HashMap::new();
-
-    custom_ders.insert(search_unit, search_der_path);
-
     let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
+    custom_ders.insert(search_unit, search_der_path);
 
     let mint = Mint::new(
         &settings.info.url,

@@ -38,6 +38,7 @@ pub struct SearchSettings {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
+    pub enable_ln: bool,
     pub cln: Cln,
     pub ln: Ln,
     pub search_settings: SearchSettings,
