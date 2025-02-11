@@ -11,14 +11,10 @@ use athenut_mint::{config, expand_path, work_dir};
 use axum::Router;
 use bip39::Mnemonic;
 use bitcoin::bip32::{ChildNumber, DerivationPath};
-use cdk::cdk_lightning::{self, MintLightning};
-use cdk::mint::{FeeReserve, Mint};
+use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{
-    nut04, nut05, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
-    MintVersion, Nuts, PaymentMethod,
-};
-use cdk::types::{LnKey, QuoteTTL};
+use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
+use cdk::types::QuoteTTL;
 use cdk_redb::MintRedbDatabase;
 use clap::Parser;
 use reqwest::Client;
@@ -66,6 +62,8 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = config::Settings::new(&Some(config_file_arg));
 
+    let mut mint_builder = MintBuilder::default().with_localstore(localstore);
+
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
     if let Some(nostr_contact) = &settings.mint_info.contact_nostr_public_key {
@@ -101,91 +99,60 @@ async fn main() -> anyhow::Result<()> {
         percent_fee_reserve: relative_ln_fee,
     };
 
-    let mut nuts = Nuts::new()
-        .nut07(true)
-        .nut08(true)
-        .nut09(true)
-        .nut10(true)
-        .nut11(true)
-        .nut12(true)
-        .nut14(true);
-
-    let mut custom_ders = HashMap::new();
-
     let mut supported_units = HashMap::new();
     let search_unit = CurrencyUnit::from_str("XSR")?;
-    let mut ln_backends: HashMap<
-        LnKey,
-        Arc<dyn MintLightning<Err = cdk_lightning::Error> + Send + Sync>,
-    > = HashMap::new();
 
-    if settings.enable_ln {
-        let cln_socket = expand_path(
-            settings
-                .cln
-                .rpc_path
-                .to_str()
-                .ok_or(anyhow!("cln socket not defined"))?,
-        )
-        .ok_or(anyhow!("cln socket not defined"))?;
+    tracing::info!("LN enabled");
+    let cln_socket = expand_path(
+        settings
+            .cln
+            .rpc_path
+            .to_str()
+            .ok_or(anyhow!("cln socket not defined"))?,
+    )
+    .ok_or(anyhow!("cln socket not defined"))?;
 
-        let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
+    let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
 
-        ln_backends.insert(LnKey::new(search_unit.clone(), PaymentMethod::Bolt11), cln);
-        supported_units.insert(search_unit.clone(), (0, 1));
+    supported_units.insert(search_unit.clone(), (0, 1));
 
-        let nut04_settings = nut04::Settings::new(
-            vec![MintMethodSettings {
-                method: PaymentMethod::Bolt11,
-                unit: search_unit.clone(),
-                min_amount: Some(1.into()),
-                max_amount: Some(100.into()),
-                description: true,
-            }],
-            false,
-        );
+    let mint_melt_limits = MintMeltLimits {
+        mint_min: 1.into(),
+        mint_max: 25.into(),
+        melt_min: 0.into(),
+        melt_max: 0.into(),
+    };
 
-        nuts = nuts.nut04(nut04_settings);
-
-        let nut05_settings = nut05::Settings::new(
-            vec![MeltMethodSettings {
-                method: PaymentMethod::Bolt11,
-                unit: search_unit.clone(),
-                min_amount: None,
-                max_amount: None,
-            }],
-            true,
-        );
-        nuts = nuts.nut05(nut05_settings);
-    }
-
-    let mut mint_info = MintInfo::new()
-        .name(settings.mint_info.name)
-        .version(mint_version)
-        .description(settings.mint_info.description)
-        .nuts(nuts);
+    mint_builder = mint_builder.add_ln_backend(
+        search_unit.clone(),
+        PaymentMethod::Bolt11,
+        mint_melt_limits,
+        cln,
+    );
 
     if let Some(long_description) = &settings.mint_info.description_long {
-        mint_info = mint_info.long_description(long_description);
+        mint_builder = mint_builder.with_long_description(long_description.to_string());
     }
 
     if let Some(contact_info) = contact_info {
-        mint_info = mint_info.contact_info(contact_info);
+        for info in contact_info {
+            mint_builder = mint_builder.add_contact_info(info);
+        }
     }
 
     if let Some(pubkey) = settings.mint_info.pubkey {
-        mint_info = mint_info.pubkey(pubkey);
+        mint_builder = mint_builder.with_pubkey(pubkey);
     }
 
     if let Some(icon_url) = &settings.mint_info.icon_url {
-        mint_info = mint_info.icon_url(icon_url);
+        mint_builder = mint_builder.with_icon_url(icon_url.to_string());
     }
 
     if let Some(motd) = settings.mint_info.motd {
-        mint_info = mint_info.motd(motd);
+        mint_builder = mint_builder.with_motd(motd);
     }
 
-    let quote_ttl = QuoteTTL::new(DEFAULT_QUOTE_TTL_SECS, DEFAULT_QUOTE_TTL_SECS);
+    let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
 
     let search_der_path = DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
@@ -193,20 +160,21 @@ async fn main() -> anyhow::Result<()> {
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
     ]);
 
-    let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
+    let mut custom_ders = HashMap::new();
     custom_ders.insert(search_unit, search_der_path);
 
-    let mint = Mint::new(
-        &settings.info.url,
-        &mnemonic.to_seed_normalized(""),
-        mint_info,
-        quote_ttl,
-        localstore,
-        ln_backends.clone(),
-        supported_units,
-        custom_ders,
-    )
-    .await?;
+    mint_builder = mint_builder
+        .with_name(settings.mint_info.name)
+        .with_version(mint_version)
+        .with_description(settings.mint_info.description)
+        .add_custom_derivation_paths(custom_ders)
+        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+
+    let mint = mint_builder.build().await?;
+
+    mint.set_mint_info(mint_builder.mint_info).await?;
+    let quote_ttl = QuoteTTL::new(DEFAULT_QUOTE_TTL_SECS, DEFAULT_QUOTE_TTL_SECS);
+    mint.set_quote_ttl(quote_ttl).await?;
 
     let mint = Arc::new(mint);
 
