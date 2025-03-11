@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mint_melt_limits = MintMeltLimits {
         mint_min: 1.into(),
-        mint_max: 25.into(),
+        mint_max: 50.into(),
         melt_min: 0.into(),
         melt_max: 0.into(),
     };
