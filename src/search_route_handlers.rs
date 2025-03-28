@@ -7,6 +7,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut18::PaymentRequestBuilder;
+use cdk::nuts::CurrencyUnit;
 use cdk::nuts::TokenV4;
 use cdk::util::unix_time;
 use reqwest::Client as ReqwestClient;
@@ -33,23 +35,69 @@ async fn get_search(
     headers: HeaderMap,
     q: Query<Params>,
     State(state): State<ApiState>,
-) -> Result<Json<Vec<SearchResult>>, StatusCode> {
+) -> Result<Json<Vec<SearchResult>>, (StatusCode, HeaderMap)> {
+    let mint_url = match "https://mint.athenut.com".parse() {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::error!("Failed to parse mint URL: {}", err);
+            let headers = HeaderMap::new();
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, headers));
+        }
+    };
+
+    let payment_request = PaymentRequestBuilder::default()
+        .unit(CurrencyUnit::Custom("xsr".to_string()))
+        .amount(1)
+        .add_mint(mint_url)
+        .build();
+
+    // Create payment required response with header
+    let payment_required_response = || {
+        let mut headers = HeaderMap::new();
+        let header_value = payment_request
+            .to_string()
+            .parse()
+            .map_err(|_| {
+                tracing::error!("Failed to parse payment request to header value");
+            })
+            .expect("Valid header");
+        headers.insert("X-Cashu", header_value);
+        (StatusCode::PAYMENT_REQUIRED, headers)
+    };
+
     let x_cashu = headers
         .get("X-Cashu")
-        .ok_or(StatusCode::PAYMENT_REQUIRED)?
+        .ok_or_else(payment_required_response)?
         .to_str()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            let headers = HeaderMap::new();
+            (StatusCode::INTERNAL_SERVER_ERROR, headers)
+        })?;
 
-    let token: TokenV4 = TokenV4::from_str(x_cashu).unwrap();
+    let token: TokenV4 = match TokenV4::from_str(x_cashu) {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::error!("Failed to parse token: {}", err);
+            let headers = HeaderMap::new();
+            return Err((StatusCode::BAD_REQUEST, headers));
+        }
+    };
 
-    let token_amount = token.value().unwrap();
+    let token_amount = match token.value() {
+        Ok(amount) => amount,
+        Err(err) => {
+            tracing::error!("Failed to get token value: {}", err);
+            let headers = HeaderMap::new();
+            return Err((StatusCode::BAD_REQUEST, headers));
+        }
+    };
 
     if token_amount != 1.into() {
-        return Err(StatusCode::PAYMENT_REQUIRED);
+        return Err(payment_required_response());
     }
 
     let proofs = token.proofs();
-    let proof = proofs.first().ok_or(StatusCode::PAYMENT_REQUIRED)?;
+    let proof = proofs.first().ok_or_else(payment_required_response)?;
 
     let time = unix_time();
 
@@ -57,14 +105,17 @@ async fn get_search(
 
     mint.verify_proof(proof).await.map_err(|_| {
         tracing::warn!("P2PK verification failed");
-        StatusCode::PAYMENT_REQUIRED
+        payment_required_response()
     })?;
 
-    let y = proof.y().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let y = proof.y().map_err(|_| {
+        let headers = HeaderMap::new();
+        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+    })?;
 
     mint.check_ys_spendable(&[y], cdk::nuts::State::Spent)
         .await
-        .map_err(|_| StatusCode::PAYMENT_REQUIRED)?;
+        .map_err(|_| payment_required_response())?;
 
     tracing::info!("Time to verify: {}", unix_time() - time);
 
@@ -86,19 +137,21 @@ async fn get_search(
         .await
         .map_err(|err| {
             tracing::error!("Failed to make kagi request: {}", err);
-            StatusCode::INTERNAL_SERVER_ERROR
+            let headers = HeaderMap::new();
+            (StatusCode::INTERNAL_SERVER_ERROR, headers)
         })?;
 
     tracing::info!("Kagi time: {}", unix_time() - time);
     let time = unix_time();
-    let json_response = response
-        .json::<Value>()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let json_response = response.json::<Value>().await.map_err(|_| {
+        let headers = HeaderMap::new();
+        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+    })?;
 
     let results: KagiSearchResponse = serde_json::from_value(json_response).map_err(|_| {
         tracing::error!("Invalid response from kagi");
-        StatusCode::INTERNAL_SERVER_ERROR
+        let headers = HeaderMap::new();
+        (StatusCode::INTERNAL_SERVER_ERROR, headers)
     })?;
 
     tracing::info!(
