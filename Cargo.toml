@@ -6,20 +6,20 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 anyhow = "1"
-axum = "0.6.20"
+axum = "0.8.1"
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = "2.0"
-cdk = { version = "0.7.2", default-features = false, features = ["mint"] }
-cdk-redb = { version = "0.7.1", default-features = false, features = ["mint"] }
-cdk-axum = { version = "0.7.1", default-features = false }
+cdk = { version = "0.8.1", default-features = false, features = ["mint"] }
+cdk-redb = { version = "0.8.1", default-features = false, features = ["mint"] }
+cdk-axum = { version = "0.8.1", default-features = false }
 # cdk = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false, features = ["mint"] }
 # cdk-redb = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false, features = ["mint"] }
 # cdk-axum = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false }
 config = { version = "0.13.3", features = ["toml"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-tokio = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["signal"] }
 tokio-util = { version = "0.7.11", default-features = false }
 tower-http = { version = "0.4.4", features = ["cors"] }
 home = "0.5.5"

@@ -2,10 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION, CONTENT_TYPE,
-};
-use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
 use cdk::mint::Mint;
@@ -15,7 +12,6 @@ use cdk::util::unix_time;
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tower_http::cors::CorsLayer;
 
 use crate::db::{Db, SearchCount};
 
@@ -135,13 +131,6 @@ pub fn search_router(state: ApiState) -> Router {
         .route("/info", get(get_info))
         .route("/search", get(get_search))
         .route("/search_count", get(get_search_count))
-        .layer(CorsLayer::very_permissive().allow_headers([
-            AUTHORIZATION,
-            CONTENT_TYPE,
-            ACCESS_CONTROL_ALLOW_CREDENTIALS,
-            ACCESS_CONTROL_ALLOW_ORIGIN,
-            HeaderName::from_str("X-Cashu").unwrap(),
-        ]))
         .with_state(state)
 }
 

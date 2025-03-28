@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use cdk::nuts::MeltOptions;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -13,11 +14,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bitcoin::hashes::serde::Deserialize;
 use cdk::amount::{to_unit, Amount};
-use cdk::cdk_lightning::{
-    self, CreateInvoiceResponse, MintLightning, PayInvoiceResponse, PaymentQuoteResponse, Settings,
+use cdk::cdk_payment::{
+    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
+    PaymentQuoteResponse,
 };
-use cdk::mint::FeeReserve;
-use cdk::nuts::{CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
+use cdk::types::FeeReserve;
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
@@ -61,7 +63,7 @@ pub enum Error {
     Amount(#[from] cdk::amount::Error),
 }
 
-impl From<Error> for cdk::cdk_lightning::Error {
+impl From<Error> for cdk::cdk_payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
     }
@@ -93,15 +95,15 @@ impl Cln {
 }
 
 #[async_trait]
-impl MintLightning for Cln {
-    type Err = cdk_lightning::Error;
+impl MintPayment for Cln {
+    type Err = cdk_payment::Error;
 
-    fn get_settings(&self) -> Settings {
-        Settings {
+    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+        Ok(serde_json::to_value(Bolt11Settings {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
-        }
+        })?)
     }
 
     /// Is wait invoice active
@@ -114,7 +116,7 @@ impl MintLightning for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    async fn wait_any_invoice(
+    async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
         let last_pay_index = self.get_last_pay_index().await?;
@@ -223,18 +225,16 @@ impl MintLightning for Cln {
 
     async fn get_payment_quote(
         &self,
-        melt_quote_request: &MeltQuoteBolt11Request,
+        request: &str,
+        unit: &CurrencyUnit,
+        _option: Option<MeltOptions>,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let invoice_amount_msat = melt_quote_request
-            .request
+        let bolt11 = Bolt11Invoice::from_str(&request)?;
+        let invoice_amount_msat = bolt11
             .amount_milli_satoshis()
             .ok_or(Error::UnknownInvoiceAmount)?;
 
-        let amount = to_unit(
-            invoice_amount_msat,
-            &CurrencyUnit::Msat,
-            &melt_quote_request.unit,
-        )?;
+        let amount = to_unit(invoice_amount_msat, &CurrencyUnit::Msat, unit)?;
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -247,19 +247,19 @@ impl MintLightning for Cln {
         };
 
         Ok(PaymentQuoteResponse {
-            request_lookup_id: melt_quote_request.request.payment_hash().to_string(),
+            request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
     }
 
-    async fn pay_invoice(
+    async fn make_payment(
         &self,
         melt_quote: mint::MeltQuote,
         partial_amount: Option<Amount>,
         max_fee: Option<Amount>,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
+    ) -> Result<MakePaymentResponse, Self::Err> {
         let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
         let pay_state = self
             .check_outgoing_payment(&bolt11.payment_hash().to_string())
@@ -318,8 +318,8 @@ impl MintLightning for Cln {
                     PayStatus::PENDING => MeltQuoteState::Pending,
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
-                PayInvoiceResponse {
-                    payment_preimage: Some(hex::encode(pay_response.payment_preimage.to_vec())),
+                MakePaymentResponse {
+                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: pay_response.payment_hash.to_string(),
                     status,
                     total_spent: to_unit(
@@ -342,16 +342,13 @@ impl MintLightning for Cln {
         Ok(response)
     }
 
-    async fn create_invoice(
+    async fn create_incoming_payment_request(
         &self,
         amount: Amount,
         unit: &CurrencyUnit,
         description: String,
-        unix_expiry: u64,
-    ) -> Result<CreateInvoiceResponse, Self::Err> {
-        let time_now = unix_time();
-        assert!(unix_expiry > time_now);
-
+        unix_expiry: Option<u64>,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
         let label = Uuid::new_v4().to_string();
@@ -367,12 +364,14 @@ impl MintLightning for Cln {
 
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
 
+        let time_now = unix_time();
+
         let cln_response = cln_client
             .call(cln_rpc::Request::Invoice(InvoiceRequest {
                 amount_msat,
                 description,
                 label: label.clone(),
-                expiry: Some(unix_expiry - time_now),
+                expiry: unix_expiry.map(|u| u - time_now),
                 fallbacks: None,
                 preimage: None,
                 cltv: None,
@@ -388,9 +387,9 @@ impl MintLightning for Cln {
                 let expiry = request.expires_at().map(|t| t.as_secs());
                 let payment_hash = request.payment_hash();
 
-                Ok(CreateInvoiceResponse {
+                Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: payment_hash.to_string(),
-                    request,
+                    request: request.to_string(),
                     expiry,
                 })
             }
@@ -401,7 +400,7 @@ impl MintLightning for Cln {
         }
     }
 
-    async fn check_incoming_invoice_status(
+    async fn check_incoming_payment_status(
         &self,
         payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
@@ -447,7 +446,7 @@ impl MintLightning for Cln {
     async fn check_outgoing_payment(
         &self,
         payment_hash: &str,
-    ) -> Result<PayInvoiceResponse, Self::Err> {
+    ) -> Result<MakePaymentResponse, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
         let cln_response = cln_client
@@ -467,9 +466,9 @@ impl MintLightning for Cln {
                 Some(pays_response) => {
                     let status = cln_pays_status_to_mint_state(pays_response.status);
 
-                    Ok(PayInvoiceResponse {
+                    Ok(MakePaymentResponse {
                         payment_lookup_id: pays_response.payment_hash.to_string(),
-                        payment_preimage: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
+                        payment_proof: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
                         status,
                         total_spent: pays_response
                             .amount_sent_msat
@@ -477,9 +476,9 @@ impl MintLightning for Cln {
                         unit: CurrencyUnit::Msat,
                     })
                 }
-                None => Ok(PayInvoiceResponse {
+                None => Ok(MakePaymentResponse {
                     payment_lookup_id: payment_hash.to_string(),
-                    payment_preimage: None,
+                    payment_proof: None,
                     status: MeltQuoteState::Unknown,
                     total_spent: Amount::ZERO,
                     unit: CurrencyUnit::Msat,

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -11,15 +12,15 @@ use athenut_mint::{config, expand_path, work_dir};
 use axum::Router;
 use bip39::Mnemonic;
 use bitcoin::bip32::{ChildNumber, DerivationPath};
-use cdk::mint::{FeeReserve, MintBuilder, MintMeltLimits};
+use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
+use cdk::types::FeeReserve;
 use cdk::types::QuoteTTL;
 use cdk_redb::MintRedbDatabase;
 use clap::Parser;
 use reqwest::Client;
 use tokio::sync::Notify;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
@@ -123,12 +124,14 @@ async fn main() -> anyhow::Result<()> {
         melt_max: 0.into(),
     };
 
-    mint_builder = mint_builder.add_ln_backend(
-        search_unit.clone(),
-        PaymentMethod::Bolt11,
-        mint_melt_limits,
-        cln,
-    );
+    mint_builder = mint_builder
+        .add_ln_backend(
+            search_unit.clone(),
+            PaymentMethod::Bolt11,
+            mint_melt_limits,
+            cln,
+        )
+        .await?;
 
     if let Some(long_description) = &settings.mint_info.description_long {
         mint_builder = mint_builder.with_long_description(long_description.to_string());
@@ -207,10 +210,7 @@ async fn main() -> anyhow::Result<()> {
 
     let search_router = search_router(api_state);
 
-    let mint_service = Router::new()
-        .merge(v1_service)
-        .merge(search_router)
-        .layer(CorsLayer::permissive());
+    let mint_service = Router::new().merge(v1_service).merge(search_router);
 
     let shutdown = Arc::new(Notify::new());
 
@@ -219,27 +219,31 @@ async fn main() -> anyhow::Result<()> {
         async move { mint.wait_for_paid_invoices(shutdown).await }
     });
 
-    let axum_result = axum::Server::bind(
-        &format!("{}:{}", listen_addr, listen_port)
-            .as_str()
-            .parse()?,
-    )
-    .serve(mint_service.into_make_service())
-    .await;
+    let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
 
-    shutdown.notify_waiters();
+    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    match axum_result {
+    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
+
+    match axum_result.await {
         Ok(_) => {
             tracing::info!("Axum server stopped with okay status");
         }
         Err(err) => {
             tracing::warn!("Axum server stopped with error");
             tracing::error!("{}", err);
-
             bail!("Axum exited with error")
         }
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install CTRL+C handler");
+    tracing::info!("Shutdown signal received");
 }
