@@ -21,6 +21,7 @@ use cdk_redb::MintRedbDatabase;
 use clap::Parser;
 use reqwest::Client;
 use tokio::sync::Notify;
+use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
@@ -210,7 +211,10 @@ async fn main() -> anyhow::Result<()> {
 
     let search_router = search_router(api_state);
 
-    let mint_service = Router::new().merge(v1_service).merge(search_router);
+    let mint_service = Router::new()
+        .merge(v1_service)
+        .merge(search_router)
+        .layer(CorsLayer::very_permissive());
 
     let shutdown = Arc::new(Notify::new());
 
