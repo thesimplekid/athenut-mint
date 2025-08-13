@@ -33,7 +33,6 @@ use cln_rpc::model::Request;
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use futures::{Stream, StreamExt};
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -73,7 +72,6 @@ impl From<Error> for cdk::cdk_payment::Error {
 #[derive(Clone)]
 pub struct Cln {
     rpc_socket: PathBuf,
-    cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -82,11 +80,11 @@ pub struct Cln {
 impl Cln {
     /// Create new [`Cln`]
     pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
-        let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
+        // Test the connection by creating a client and dropping it
+        let _test_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
 
         Ok(Self {
             rpc_socket,
-            cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -277,7 +275,7 @@ impl MintPayment for Cln {
             }
         }
 
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
         let cln_response = cln_client
             .call(Request::Pay(PayRequest {
                 bolt11: melt_quote.request.to_string(),
@@ -349,7 +347,7 @@ impl MintPayment for Cln {
         description: String,
         unix_expiry: Option<u64>,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let label = Uuid::new_v4().to_string();
 
@@ -404,7 +402,7 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let cln_response = cln_client
             .call(Request::ListInvoices(ListinvoicesRequest {
@@ -447,7 +445,7 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let cln_response = cln_client
             .call(Request::ListPays(ListpaysRequest {
@@ -529,7 +527,7 @@ fn cents_to_msats(cents: u64, btc_price_dollars: u64) -> Result<u64, Error> {
 impl Cln {
     /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
         let cln_response = cln_client
             .call(cln_rpc::Request::ListInvoices(ListinvoicesRequest {
                 index: None,
