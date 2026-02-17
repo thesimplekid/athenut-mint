@@ -4,23 +4,21 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
+use athenut_mint::cdk_wallet::CashuWalletBackend;
 use athenut_mint::cli::CLIArgs;
-use athenut_mint::cln::Cln;
-use athenut_mint::db::Db;
 use athenut_mint::search_route_handlers::{search_router, ApiState};
-use athenut_mint::{config, expand_path, work_dir};
+use athenut_mint::{config, work_dir, XSR_UNIT};
 use axum::Router;
 use bip39::Mnemonic;
 use bitcoin::bip32::{ChildNumber, DerivationPath};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{ContactInfo, CurrencyUnit, MintVersion, PaymentMethod};
-use cdk::types::FeeReserve;
+use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
-use cdk_redb::MintRedbDatabase;
+use cdk_common::payment::DynMintPayment;
+use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use reqwest::Client;
-use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -33,10 +31,11 @@ async fn main() -> anyhow::Result<()> {
 
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
+    let rustls_filter = "rustls=warn,tungstenite=warn,tokio_tungstenite=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
+        "{},{},{},{}",
+        default_filter, sqlx_filter, hyper_filter, rustls_filter
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -48,8 +47,10 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir()?,
     };
 
-    let redb_path = work_dir.join("cdk-mintd.redb");
-    let localstore = Arc::new(MintRedbDatabase::new(&redb_path)?);
+    std::fs::create_dir_all(&work_dir)?;
+
+    let sqlite_path = work_dir.join("cdk-mintd.sqlite");
+    let localstore = Arc::new(MintSqliteDatabase::new(&sqlite_path).await?);
 
     let mint_version = MintVersion::new(
         "cdk-athenut-mint".to_string(),
@@ -64,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = config::Settings::new(&Some(config_file_arg));
 
-    let mut mint_builder = MintBuilder::default().with_localstore(localstore);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -92,45 +93,41 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    let relative_ln_fee = settings.ln.fee_percent;
-
-    let absolute_ln_fee_reserve = settings.ln.reserve_fee_min;
-
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: absolute_ln_fee_reserve,
-        percent_fee_reserve: relative_ln_fee,
-    };
-
     let mut supported_units = HashMap::new();
-    let search_unit = CurrencyUnit::from_str("XSR")?;
+    let search_unit = XSR_UNIT.clone();
 
-    tracing::info!("LN enabled");
-    let cln_socket = expand_path(
-        settings
-            .cln
-            .rpc_path
-            .to_str()
-            .ok_or(anyhow!("cln socket not defined"))?,
+    let cashu_wallet_seed = settings
+        .cashu_wallet
+        .seed
+        .as_ref()
+        .ok_or(anyhow!("cashu_wallet seed not defined"))?;
+
+    let cdk_wallet_backend = CashuWalletBackend::new(
+        &settings.cashu_wallet.mint_url,
+        cashu_wallet_seed,
+        &work_dir,
+        &settings.search_settings.kagi_auth_token,
+        settings.cashu_wallet.cost_per_xsr_cents,
     )
-    .ok_or(anyhow!("cln socket not defined"))?;
+    .await?;
 
-    let cln = Arc::new(Cln::new(cln_socket, fee_reserve).await?);
+    let cdk_wallet_backend: DynMintPayment = Arc::new(cdk_wallet_backend);
 
     supported_units.insert(search_unit.clone(), (0, 1));
 
     let mint_melt_limits = MintMeltLimits {
         mint_min: 1.into(),
         mint_max: 50.into(),
-        melt_min: 0.into(),
-        melt_max: 0.into(),
+        melt_min: 1.into(),
+        melt_max: 1.into(),
     };
 
-    mint_builder = mint_builder
-        .add_ln_backend(
+    mint_builder
+        .add_payment_processor(
             search_unit.clone(),
-            PaymentMethod::Bolt11,
+            PaymentMethod::BOLT11,
             mint_melt_limits,
-            cln,
+            cdk_wallet_backend,
         )
         .await?;
 
@@ -140,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(contact_info) = contact_info {
         for info in contact_info {
-            mint_builder = mint_builder.add_contact_info(info);
+            mint_builder = mint_builder.with_contact_info(info);
         }
     }
 
@@ -160,23 +157,21 @@ async fn main() -> anyhow::Result<()> {
 
     let search_der_path = DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
-        ChildNumber::from_hardened_idx(4).expect("0 is a valid index"),
+        ChildNumber::from_hardened_idx(25).expect("0 is a valid index"),
         ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
     ]);
 
     let mut custom_ders = HashMap::new();
     custom_ders.insert(search_unit, search_der_path);
 
-    mint_builder = mint_builder
+    let mint = mint_builder
         .with_name(settings.mint_info.name)
         .with_version(mint_version)
         .with_description(settings.mint_info.description)
-        .add_custom_derivation_paths(custom_ders)
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+        .with_custom_derivation_paths(custom_ders)
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await?;
 
-    let mint = mint_builder.build().await?;
-
-    mint.set_mint_info(mint_builder.mint_info).await?;
     let quote_ttl = QuoteTTL::new(DEFAULT_QUOTE_TTL_SECS, DEFAULT_QUOTE_TTL_SECS);
     mint.set_quote_ttl(quote_ttl).await?;
 
@@ -185,11 +180,11 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;
 
-    let v1_service = cdk_axum::create_mint_router(Arc::clone(&mint)).await?;
+    let v1_service =
+        cdk_axum::create_mint_router(Arc::clone(&mint), vec![PaymentMethod::BOLT11.to_string()])
+            .await?;
 
-    // Database for athenmint
-    let athenmint_db = work_dir.join("athenmint_search_api.redb");
-    let db = Db::new(&athenmint_db)?;
+    mint.start().await?;
 
     let mint_url = MintUrl::from_str(&settings.info.url)?;
     let info = athenut_mint::search_route_handlers::Info {
@@ -206,7 +201,6 @@ async fn main() -> anyhow::Result<()> {
         mint: Arc::clone(&mint),
         settings: search_settings,
         reqwest_client: Client::new(),
-        db,
     };
 
     let search_router = search_router(api_state);
@@ -216,18 +210,11 @@ async fn main() -> anyhow::Result<()> {
         .merge(search_router)
         .layer(CorsLayer::very_permissive());
 
-    let shutdown = Arc::new(Notify::new());
-
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint.wait_for_paid_invoices(shutdown).await }
-    });
-
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    tracing::debug!("listening on {}", listener.local_addr()?);
 
     let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
 
@@ -241,6 +228,7 @@ async fn main() -> anyhow::Result<()> {
             bail!("Axum exited with error")
         }
     }
+    mint.stop().await?;
 
     Ok(())
 }

@@ -10,9 +10,10 @@ axum = "0.8.1"
 clap = { version = "4.4.8", features = ["derive", "env", "default"] }
 bitcoin = { version= "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = "2.0"
-cdk = { version = "0.8.1", default-features = false, features = ["mint"] }
-cdk-redb = { version = "0.8.1", default-features = false, features = ["mint"] }
-cdk-axum = { version = "0.8.1", default-features = false }
+cdk = { git = "https://github.com/thesimplekid/cdk", branch = "fix_build_with_seed", default-features = false, features = ["mint", "wallet"] }
+cdk-common = { git = "https://github.com/thesimplekid/cdk", branch = "fix_build_with_seed", default-features = false, features = ["mint", "wallet"] }
+cdk-sqlite = { git = "https://github.com/thesimplekid/cdk", branch = "fix_build_with_seed", default-features = false, features = ["mint", "wallet"] }
+cdk-axum = { git = "https://github.com/thesimplekid/cdk", branch = "fix_build_with_seed", default-features = false }
 # cdk = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false, features = ["mint"] }
 # cdk-redb = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false, features = ["mint"] }
 # cdk-axum = { git = "https://github.com/thesimplekid/cdk.git", rev = "e70c03e4", default-features = false }
@@ -35,5 +36,7 @@ thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 nostr-sdk = { version = "0.35.0", features = ["nip59"] }
 serde_json = "1.0.132"
-redb = "2.2.0"
 cln-rpc = "0.3.0"
+futures-core = "0.3.32"
+rand = "0.8"
+hex = "0.4"

@@ -13,10 +13,9 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
-    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -39,8 +38,22 @@
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable.latest.default;
 
+                # Nightly used for formatting
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (
+          toolchain:
+          toolchain.default.override {
+            extensions = [
+              "rustfmt"
+              "clippy"
+              "rust-analyzer"
+              "rust-src"
+            ];
+            targets = [ "wasm32-unknown-unknown" ]; # wasm
+          }
+        );
+
+
         # Common inputs
-        envVars = { };
         buildInputs = with pkgs; [
           # Add additional build inputs here
           git
@@ -50,7 +63,17 @@
           nixpkgs-fmt
           rust-analyzer
           typos
+          protobuf
+
+
         ] ++ libsDarwin;
+
+        # Environment variables
+        envVars = {
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+        };
+
 
         # WASM deps
         WASMInputs = with pkgs; [
@@ -64,37 +87,6 @@
       in
       {
         checks = {
-          # Pre-commit checks
-          pre-commit-check =
-            let
-              # this is a hack based on https://github.com/cachix/pre-commit-hooks.nix/issues/126
-              # we want to use our own rust stuff from oxalica's overlay
-              _rust = pkgs.rust-bin.stable.latest.default;
-              rust = pkgs.buildEnv {
-                name = _rust.name;
-                inherit (_rust) meta;
-                buildInputs = [ pkgs.makeWrapper ];
-                paths = [ _rust ];
-                pathsToLink = [ "/" "/bin" ];
-                postBuild = ''
-                  for i in $out/bin/*; do
-                    wrapProgram "$i" --prefix PATH : "$out/bin"
-                  done
-                '';
-              };
-            in
-            pre-commit-hooks.lib.${system}.run {
-              src = ./.;
-              hooks = {
-                rustfmt = {
-                  enable = true;
-                  entry = lib.mkForce "${rust}/bin/cargo-fmt fmt --all -- --config format_code_in_doc_comments=true --check --color always";
-                };
-                nixpkgs-fmt.enable = true;
-                typos.enable = true;
-                commitizen.enable = true; # conventional commits
-              };
-            };
         };
 
         devShells =
@@ -109,11 +101,17 @@
               inherit nativeBuildInputs;
             } // envVars);
 
+            nightly = pkgs.mkShell ({
+              shellHook = "${_shellHook}";
+              buildInputs = buildInputs ++ WASMInputs ++ [ nightly_toolchain ];
+              inherit nativeBuildInputs;
+            } // envVars);
+
 
           in
           {
-            inherit stable;
-            default = stable;
+            inherit stable nightly;
+            default = nightly;
           };
       }
     );

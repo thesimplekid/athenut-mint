@@ -8,21 +8,23 @@ use axum::{Json, Router};
 use cdk::mint::Mint;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut18::PaymentRequestBuilder;
-use cdk::nuts::CurrencyUnit;
 use cdk::nuts::TokenV4;
 use cdk::util::unix_time;
+use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::MeltRequest;
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::db::{Db, SearchCount};
+use crate::XSR_UNIT;
+
+const KV_SEARCH_NAMESPACE: &str = "athenut";
+const KV_SEARCH_COUNT_KEY: &str = "search_count";
 
 async fn get_search_count(State(state): State<ApiState>) -> Result<Json<SearchCount>, StatusCode> {
-    let db = state.db;
+    let mint = state.mint;
 
-    let search_count = db
-        .get_search_count()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let search_count = get_search_count_from_mint(&mint).await?;
 
     Ok(Json(search_count))
 }
@@ -36,17 +38,10 @@ async fn get_search(
     q: Query<Params>,
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<SearchResult>>, (StatusCode, HeaderMap)> {
-    let mint_url = match "https://mint.athenut.com".parse() {
-        Ok(url) => url,
-        Err(err) => {
-            tracing::error!("Failed to parse mint URL: {}", err);
-            let headers = HeaderMap::new();
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, headers));
-        }
-    };
+    let mint_url = state.info.mint;
 
     let payment_request = PaymentRequestBuilder::default()
-        .unit(CurrencyUnit::Custom("xsr".to_string()))
+        .unit(XSR_UNIT.clone())
         .amount(1)
         .add_mint(mint_url)
         .build();
@@ -54,13 +49,13 @@ async fn get_search(
     // Create payment required response with header
     let payment_required_response = || {
         let mut headers = HeaderMap::new();
-        let header_value = payment_request
-            .to_string()
-            .parse()
-            .map_err(|_| {
+        let header_value = match payment_request.to_string().parse() {
+            Ok(hv) => hv,
+            Err(_) => {
                 tracing::error!("Failed to parse payment request to header value");
-            })
-            .expect("Valid header");
+                return (StatusCode::INTERNAL_SERVER_ERROR, headers);
+            }
+        };
         headers.insert("X-Cashu", header_value);
         (StatusCode::PAYMENT_REQUIRED, headers)
     };
@@ -96,26 +91,38 @@ async fn get_search(
         return Err(payment_required_response());
     }
 
-    let proofs = token.proofs();
-    let proof = proofs.first().ok_or_else(payment_required_response)?;
-
-    let time = unix_time();
+    let melt_quote_request = MeltQuoteRequest::Custom(cdk_common::MeltQuoteCustomRequest {
+        method: "bolt11".to_string(),
+        request: q.q.clone(),
+        unit: XSR_UNIT.clone(),
+        extra: Value::Null,
+    });
 
     let mint = state.mint;
 
-    mint.verify_proof(proof).await.map_err(|_| {
-        tracing::warn!("P2PK verification failed");
-        payment_required_response()
-    })?;
-
-    let y = proof.y().map_err(|_| {
+    let quote = mint.get_melt_quote(melt_quote_request).await.map_err(|e| {
+        tracing::error!("Failed to get melt quote: {}", e);
         let headers = HeaderMap::new();
         (StatusCode::INTERNAL_SERVER_ERROR, headers)
     })?;
 
-    mint.check_ys_spendable(&[y], cdk::nuts::State::Spent)
-        .await
-        .map_err(|_| payment_required_response())?;
+    let keysets = mint.keysets().keysets;
+
+    // REVIEW: I think mint keysets is only the active ones and we should have old ones too
+    let proofs = token.proofs(&keysets).map_err(|e| {
+        tracing::error!("Failed to get proofs from token: {}", e);
+        let headers = HeaderMap::new();
+        (StatusCode::BAD_REQUEST, headers)
+    })?;
+
+    let proof = proofs
+        .first()
+        .cloned()
+        .ok_or_else(payment_required_response)?;
+
+    let time = unix_time();
+
+    let melt_request = MeltRequest::new(quote.quote, vec![proof], None);
 
     tracing::info!("Time to verify: {}", unix_time() - time);
 
@@ -124,31 +131,22 @@ async fn get_search(
     tracing::info!("Send: {}", unix_time() - time);
 
     let time = unix_time();
-
-    let response = state
-        .reqwest_client
-        .get("https://kagi.com/api/v0/search")
-        .header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bot {}", state.settings.kagi_auth_token),
-        )
-        .query(&[("q", q.q.clone())])
-        .send()
-        .await
-        .map_err(|err| {
-            tracing::error!("Failed to make kagi request: {}", err);
-            let headers = HeaderMap::new();
-            (StatusCode::INTERNAL_SERVER_ERROR, headers)
-        })?;
-
-    tracing::info!("Kagi time: {}", unix_time() - time);
-    let time = unix_time();
-    let json_response = response.json::<Value>().await.map_err(|_| {
+    let melt_res = mint.melt(&melt_request).await.map_err(|e| {
+        tracing::error!("Failed to melt: {}", e);
         let headers = HeaderMap::new();
         (StatusCode::INTERNAL_SERVER_ERROR, headers)
     })?;
 
-    let results: KagiSearchResponse = serde_json::from_value(json_response).map_err(|_| {
+    tracing::info!("Kagi time: {}", unix_time() - time);
+    let time = unix_time();
+
+    let json_response = melt_res.payment_preimage.ok_or_else(|| {
+        tracing::error!("Melt response missing preimage");
+        let headers = HeaderMap::new();
+        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+    })?;
+
+    let results: KagiSearchResponse = serde_json::from_str(&json_response).map_err(|_| {
         tracing::error!("Invalid response from kagi");
         let headers = HeaderMap::new();
         (StatusCode::INTERNAL_SERVER_ERROR, headers)
@@ -160,9 +158,12 @@ async fn get_search(
         results.meta.node
     );
 
-    if let Err(err) = state.db.increment_search_count() {
-        tracing::error!("Could not update search counter: {}", err);
-    }
+    let mint_clone = Arc::clone(&mint);
+    tokio::spawn(async move {
+        if let Err(err) = add_search(&mint_clone).await {
+            tracing::error!("Could not update search counter: {}", err);
+        }
+    });
 
     let search_results: Vec<KagiSearchResult> = results
         .data
@@ -177,6 +178,51 @@ async fn get_search(
 
     tracing::info!("Json time: {}", unix_time() - time);
     Ok(Json(results))
+}
+
+#[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize)]
+pub struct SearchCount {
+    pub all_time_search_count: u64,
+}
+
+pub async fn add_search(mint: &Mint) -> anyhow::Result<()> {
+    let mut tx = mint.localstore().begin_transaction().await?;
+
+    let current_count = tx
+        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY)
+        .await?
+        .map(|v| {
+            let bytes = v.as_slice();
+            u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))
+        })
+        .unwrap_or(0);
+
+    let new_count = current_count + 1;
+    let value = new_count.to_le_bytes().to_vec();
+
+    tx.kv_write(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY, &value)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(())
+}
+
+async fn get_search_count_from_mint(mint: &Mint) -> Result<SearchCount, StatusCode> {
+    let count = mint
+        .localstore()
+        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|v| {
+            let bytes = v.as_slice();
+            u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))
+        })
+        .unwrap_or(0);
+
+    Ok(SearchCount {
+        all_time_search_count: count,
+    })
 }
 
 pub fn search_router(state: ApiState) -> Router {
@@ -209,7 +255,6 @@ pub struct ApiState {
     pub mint: Arc<Mint>,
     pub settings: Settings,
     pub reqwest_client: ReqwestClient,
-    pub db: Db,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,53 @@
+[info]
+# Public URL of the mint
+url = "https://mint.example.com"
+# Host to listen on
+listen_host = "127.0.0.1"
+# Port to listen on
+listen_port = 3338
+# BIP39 mnemonic for key derivation (generate with e.g. `openssl rand -hex 32` then convert)
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+# Optional: how long quotes are valid (seconds)
+# seconds_quote_is_valid_for = 1800
+# Optional: how long to cache requests (seconds)
+# seconds_to_cache_requests_for = 60
+# Optional: how long to extend cache (seconds)
+# seconds_to_extend_cache_by = 30
+# Optional: input fee per proof in parts per thousand
+# input_fee_ppk = 0
+
+[mint_info]
+# Display name of the mint
+name = "Athenut Mint"
+# Short description
+description = "A Cashu mint for search"
+# Optional: long description
+# description_long = "A more detailed description of this mint"
+# Optional: hex-encoded public key of the mint operator
+# pubkey = "0200..."
+# Optional: URL to the mint icon
+# icon_url = "https://mint.example.com/icon.png"
+# Optional: message of the day displayed to wallet users
+# motd = "Welcome to Athenut Mint!"
+# Optional: nostr public key for contact
+# contact_nostr_public_key = "npub1..."
+# Optional: contact email
+# contact_email = "admin@example.com"
+
+[ln]
+# Fee percentage for lightning payments
+fee_percent = 0.0
+# Minimum reserve fee (in smallest unit)
+reserve_fee_min = 0
+
+[search_settings]
+# Kagi API auth token for search functionality
+kagi_auth_token = "your-kagi-auth-token"
+
+[cashu_wallet]
+# Mint URL for the backing Cashu wallet
+mint_url = "https://backing-mint.example.com"
+# Seed for the Cashu wallet
+seed = "your-wallet-seed-here"
+# Cost per XSR token in cents (defaults to 3)
+cost_per_xsr_cents = 3

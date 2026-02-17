@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use cdk::nuts::PublicKey;
-use cdk::Amount;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -18,14 +17,15 @@ pub struct Info {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Ln {
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
+pub struct CashuWallet {
+    pub mint_url: String,
+    pub seed: Option<String>,
+    #[serde(default = "default_cost_per_xsr_cents")]
+    pub cost_per_xsr_cents: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Cln {
-    pub rpc_path: PathBuf,
+fn default_cost_per_xsr_cents() -> u64 {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -38,9 +38,8 @@ pub struct SearchSettings {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
-    pub cln: Cln,
-    pub ln: Ln,
     pub search_settings: SearchSettings,
+    pub cashu_wallet: CashuWallet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
