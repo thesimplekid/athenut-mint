@@ -33,6 +33,155 @@ async fn get_info(State(state): State<ApiState>) -> Result<Json<Info>, StatusCod
     Ok(Json(state.info))
 }
 
+async fn get_agent_instructions(
+    State(state): State<ApiState>,
+) -> (StatusCode, HeaderMap, String) {
+    let mint_url = &state.info.mint;
+
+    let body = format!(
+        r#"---
+name: athenut-search
+description: Private web search API that accepts Cashu ecash tokens (xsr unit) as payment via the HTTP 402 X-Cashu protocol (NUT-24)
+metadata:
+  type: http-api
+  protocol: cashu-x-cashu
+  unit: xsr
+---
+
+# Athenut Search - Paid Web Search API
+
+Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header.
+
+The Cashu mint for this service is at: {mint_url}
+
+## Agent Safety Policy (Required)
+
+When acting as an AGENT with this skill:
+
+- Always ask for explicit user permission before spending tokens on a search, unless the user has already clearly instructed you to perform the search.
+- When receiving an HTTP 402 response, inspect the `X-Cashu` response header to understand the payment requirements before spending.
+- Never expose or log token values or wallet credentials.
+
+## HTTP 402 Payment Flow (NUT-24 / X-Cashu)
+
+This API uses the HTTP 402 Payment Required status with the `X-Cashu` header for payment negotiation.
+
+### Flow
+
+1. Send `GET /search?q=<query>` without an `X-Cashu` header (or with an invalid/insufficient token).
+2. The server responds with HTTP `402 Payment Required` and an `X-Cashu` response header containing a Cashu payment request (NUT-18 format). This request specifies the mint URL, unit (`xsr`), and amount (`1`).
+3. Use a Cashu wallet to create a token worth exactly 1 xsr minted from `{mint_url}`.
+4. Retry the request with the `X-Cashu` header set to the token string (e.g. `cashuB...`).
+5. On success, the server responds with HTTP `200` and the search results as JSON.
+
+If you have a Cashu wallet skill (such as cocod), you can use its X-Cashu handling commands to parse and settle the 402 response automatically.
+
+## Getting xsr Tokens
+
+Use any Cashu wallet that supports custom units to mint xsr tokens from `{mint_url}`.
+
+1. Create a mint quote for the desired amount of xsr from `{mint_url}`.
+2. Pay the Lightning invoice returned by the mint.
+3. Once the invoice is paid, mint the tokens.
+4. Use the wallet's send function to create a Cashu token string (starts with `cashuB...`).
+
+Each token worth 1 xsr pays for one search.
+
+## Endpoints
+
+### `GET /search`
+
+Perform a web search. Requires payment of 1 xsr via the `X-Cashu` header.
+
+**Query parameters:**
+- `q` (required) - The search query string.
+
+**Request headers:**
+- `X-Cashu` (required) - A Cashu v4 token (starting with `cashuB...`) worth exactly 1 xsr, minted from `{mint_url}`.
+
+**Success response (200):**
+
+```json
+[
+  {{
+    "url": "https://example.com",
+    "title": "Example Result",
+    "description": "A description of the result",
+    "age": "2025-01-01T00:00:00Z"
+  }}
+]
+```
+
+**Payment required response (402):**
+
+Returned when no token is provided, the token is invalid, or the token amount is not exactly 1 xsr. The `X-Cashu` response header contains a NUT-18 payment request specifying the mint, unit, and amount needed.
+
+**Bad request response (400):**
+
+Returned when the token cannot be parsed or the proofs are invalid.
+
+### `GET /info`
+
+Returns the mint URL for this service.
+
+```json
+{{
+  "mint": "{mint_url}"
+}}
+```
+
+### `GET /search_count`
+
+Returns the all-time search count.
+
+```json
+{{
+  "all_time_search_count": 12345
+}}
+```
+
+### Cashu Mint Protocol (`/v1/*`)
+
+Standard Cashu mint protocol endpoints are available under `/v1/`. These include key discovery, minting, melting, swaps, and other NUT operations. Use these if your wallet needs to interact with the mint directly.
+
+## Example
+
+```
+GET /search?q=what+is+cashu HTTP/1.1
+Host: {mint_url}
+X-Cashu: cashuBo2F0...
+```
+
+## Important Details
+
+- Token must be worth exactly 1 xsr - no more, no less.
+- The unit is `xsr`, not `sat` or any other standard unit.
+- Tokens must be minted from `{mint_url}`.
+- The `X-Cashu` header value is the raw token string (starting with `cashuB...`).
+
+## Concepts
+
+- **Cashu**: Privacy-preserving ecash protocol using blind signatures.
+- **Mint**: Server that issues and redeems Cashu tokens. This service runs a mint at `{mint_url}`.
+- **xsr**: Custom Cashu unit representing one search result. 1 xsr = 1 search.
+- **Token**: A transferable Cashu string (starting with `cashuB...`) representing value.
+- **X-Cashu**: HTTP header used to carry Cashu payment requests (server to client) and payment tokens (client to server).
+- **NUT-18**: Cashu protocol specification for payment requests.
+- **NUT-24**: Cashu protocol specification for HTTP 402 payment flow using the X-Cashu header.
+- **402 Payment Required**: HTTP status code indicating payment is needed before the request can be fulfilled.
+"#,
+        mint_url = mint_url
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        "text/plain; charset=utf-8".parse().unwrap(),
+    );
+
+    (StatusCode::OK, headers, body)
+}
+
 async fn get_search(
     headers: HeaderMap,
     q: Query<Params>,
@@ -230,6 +379,7 @@ pub fn search_router(state: ApiState) -> Router {
         .route("/info", get(get_info))
         .route("/search", get(get_search))
         .route("/search_count", get(get_search_count))
+        .route("/agent", get(get_agent_instructions))
         .with_state(state)
 }
 
