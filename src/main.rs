@@ -122,6 +122,14 @@ async fn main() -> anyhow::Result<()> {
         melt_max: 1.into(),
     };
 
+    mint_builder.configure_unit(
+        search_unit.clone(),
+        cdk::mint::UnitConfig {
+            amounts: vec![1],
+            input_fee_ppk: 0,
+        },
+    )?;
+
     mint_builder
         .add_payment_processor(
             search_unit.clone(),

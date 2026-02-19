@@ -603,8 +603,8 @@ checksum = "f61dac84819c6588b558454b194026eb1f09c293b9036ae9b159e74e73ab6cf9"
 
 [[package]]
 name = "cashu"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "bitcoin 0.32.5",
  "cbor-diag",
@@ -666,8 +666,8 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -702,8 +702,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -722,8 +722,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -754,8 +754,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "regex",
  "reqwest",
@@ -767,8 +767,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -792,8 +792,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
@@ -810,8 +810,8 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.15.0"
-source = "git+https://github.com/thesimplekid/cdk?branch=fix_build_with_seed#85f80c84501643a6618e08d7bedccb8ed661b0d9"
+version = "0.15.1"
+source = "git+https://github.com/thesimplekid/cdk?branch=config_keyset_amounts#fd966b9af6eb13ff7f2e57ceecb9156dcf918c8d"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
