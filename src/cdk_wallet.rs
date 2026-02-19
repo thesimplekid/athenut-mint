@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_stream::stream;
 use async_trait::async_trait;
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::PaymentMethod;
@@ -15,7 +16,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use futures_core::Stream;
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use cdk_common::nuts::CurrencyUnit as CommonCurrencyUnit;
@@ -43,7 +44,9 @@ struct IncomingPaymentInfo {
 pub struct CashuWalletBackend {
     wallet: Arc<Wallet>,
     wait_invoice_active: Arc<AtomicBool>,
-    pending_mints: Arc<Mutex<FuturesUnordered<JoinHandle<Option<WaitPaymentResponse>>>>>,
+    pending_mint_tx: mpsc::UnboundedSender<JoinHandle<Option<WaitPaymentResponse>>>,
+    pending_mint_rx:
+        std::sync::Mutex<Option<mpsc::UnboundedReceiver<JoinHandle<Option<WaitPaymentResponse>>>>>,
     kagi_auth_token: String,
     cost_per_xsr_cents: u64,
 }
@@ -71,10 +74,13 @@ impl CashuWalletBackend {
             None,
         )?;
 
+        let (pending_mint_tx, pending_mint_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             wallet: Arc::new(wallet),
             wait_invoice_active: Arc::new(AtomicBool::new(false)),
-            pending_mints: Arc::new(Mutex::new(FuturesUnordered::new())),
+            pending_mint_tx,
+            pending_mint_rx: std::sync::Mutex::new(Some(pending_mint_rx)),
             kagi_auth_token: kagi_auth_token.to_string(),
             cost_per_xsr_cents,
         })
@@ -175,8 +181,7 @@ impl MintPayment for CashuWalletBackend {
             }
         });
 
-        let pending = self.pending_mints.lock().await;
-        pending.push(handle);
+        let _ = self.pending_mint_tx.send(handle);
 
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: PaymentIdentifier::CustomId(quote_id_for_response),
@@ -236,8 +241,8 @@ impl MintPayment for CashuWalletBackend {
     async fn wait_payment_event(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
-        if let Ok(unissed_quotes) = self.wallet.get_unissued_mint_quotes().await {
-            for quote in unissed_quotes {
+        if let Ok(unissued_quotes) = self.wallet.get_unissued_mint_quotes().await {
+            for quote in unissued_quotes {
                 let wallet = Arc::clone(&self.wallet);
                 let handle = tokio::spawn(async move {
                     let quote_id = quote.id.clone();
@@ -282,33 +287,60 @@ impl MintPayment for CashuWalletBackend {
                     }
                 });
 
-                let pending = self.pending_mints.lock().await;
-                pending.push(handle);
+                let _ = self.pending_mint_tx.send(handle);
             }
         }
 
-        let pending_mints = Arc::clone(&self.pending_mints);
+        let mut rx = self
+            .pending_mint_rx
+            .lock()
+            .expect("pending_mint_rx mutex poisoned")
+            .take()
+            .expect("wait_payment_event called more than once");
 
-        let stream = futures::stream::unfold(pending_mints, |pending_mints| async move {
-            let mut pending = pending_mints.lock().await;
+        let s = stream! {
+            let mut pending: FuturesUnordered<JoinHandle<Option<WaitPaymentResponse>>> =
+                FuturesUnordered::new();
 
-            if let Some(result) = pending.next().await {
-                drop(pending);
-                match result {
-                    Ok(Some(response)) => {
-                        Some((Some(Event::PaymentReceived(response)), pending_mints))
+            loop {
+                // If no futures are being tracked, wait for the first handle from the channel
+                if pending.is_empty() {
+                    match rx.recv().await {
+                        Some(handle) => {
+                            pending.push(handle);
+                            continue;
+                        }
+                        None => break,
                     }
-                    Ok(None) | Err(_) => Some((None, pending_mints)),
                 }
-            } else {
-                drop(pending);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                Some((None, pending_mints))
-            }
-        })
-        .filter_map(futures::future::ready);
 
-        Ok(Box::pin(stream))
+                tokio::select! {
+                    // A spawned payment task completed
+                    Some(result) = pending.next() => {
+                        if let Ok(Some(response)) = result {
+                            yield Event::PaymentReceived(response);
+                        }
+                    }
+                    // A new payment handle arrived from the channel
+                    recv_result = rx.recv() => {
+                        match recv_result {
+                            Some(handle) => pending.push(handle),
+                            None => {
+                                // Sender dropped — drain remaining futures
+                                while let Some(result) = pending.next().await {
+                                    if let Ok(Some(response)) = result {
+                                        yield Event::PaymentReceived(response);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(s))
     }
 
     fn is_wait_invoice_active(&self) -> bool {
