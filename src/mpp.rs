@@ -1,5 +1,6 @@
 //! MPP (Machine Payments Protocol) Lightning charge implementation.
 //!
+//! Protocol overview: https://mpp.dev/protocol
 //! Implements the Lightning charge intent per the IETF spec:
 //! https://paymentauth.org/draft-lightning-charge-00
 //!

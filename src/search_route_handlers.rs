@@ -51,7 +51,7 @@ async fn get_agent_instructions(
 
 ## MPP Lightning Payment Flow (Alternative)
 
-This API also supports the Machine Payments Protocol (MPP) using Lightning Network BOLT11 invoices.
+This API also supports the [Machine Payments Protocol (MPP)](https://mpp.dev/protocol) using Lightning Network BOLT11 invoices.
 
 ### Flow
 
@@ -59,25 +59,45 @@ This API also supports the Machine Payments Protocol (MPP) using Lightning Netwo
 2. The server responds with HTTP `402 Payment Required` with:
    - `X-Cashu` header: Cashu payment request (NUT-18 format)
    - `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice
-3. Choose one payment method:
-   - **Option A (Cashu):** Pay with a Cashu token in the `X-Cashu` request header.
-   - **Option B (MPP Lightning):** Pay the BOLT11 invoice from the challenge, then retry with `Authorization: Payment <credential>` header containing the payment preimage.
-4. On success, the server responds with HTTP `200` and the search results as JSON.
+3. Parse the `WWW-Authenticate` header to extract the challenge parameters. Example header:
+   ```
+   WWW-Authenticate: Payment id="a1b2c3d4", realm="search.example.com", method="lightning", intent="charge", request="eyJhbW91bnQ...", expires="2026-03-20T12:05:00Z"
+   ```
+4. Base64url-decode the `request` parameter to get a JSON object containing the BOLT11 invoice:
+   ```json
+   {
+     "amount": "43",
+     "currency": "sat",
+     "description": "Athenut web search",
+     "methodDetails": {
+       "invoice": "lnbc430n1p...",
+       "paymentHash": "47c5effa...",
+       "network": "mainnet"
+     }
+   }
+   ```
+5. Pay the BOLT11 invoice (`methodDetails.invoice`) using a Lightning wallet. The wallet returns a payment preimage (64-char hex string).
+6. Build a credential JSON echoing back the full challenge parameters and including the preimage:
+   ```json
+   {
+     "challenge": {
+       "id": "a1b2c3d4",
+       "realm": "search.example.com",
+       "method": "lightning",
+       "intent": "charge",
+       "request": "eyJhbW91bnQ...",
+       "expires": "2026-03-20T12:05:00Z"
+     },
+     "payload": {
+       "preimage": "a3f1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e209"
+     }
+   }
+   ```
+7. Base64url-encode the credential JSON (compact, no padding).
+8. Retry the original request with `Authorization: Payment <base64url-encoded credential>`.
+9. On success, the server responds with HTTP `200` and the search results as JSON, plus a `Payment-Receipt` header.
 
-### MPP Credential Format
-
-The `Authorization` header carries a base64url-encoded JSON credential:
-
-```json
-{
-  "challenge": { ... },  // Echo of the challenge from WWW-Authenticate
-  "payload": {
-    "preimage": "<64-char hex preimage>"
-  }
-}
-```
-
-The server verifies `sha256(preimage) == paymentHash` and returns the resource with a `Payment-Receipt` header.
+The server verifies `sha256(preimage) == paymentHash` from the challenge request.
 "#
     } else {
         ""
@@ -95,9 +115,10 @@ metadata:
 
 # Athenut Search - Paid Web Search API
 
-Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header, or by paying a Lightning invoice via the MPP protocol.
+Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header, or by paying a Lightning invoice via the [Machine Payments Protocol (MPP)](https://mpp.dev/protocol).
 
-The Cashu mint for this service is at: {mint_url}
+The search API and Cashu mint are co-hosted at the same origin: {mint_url}
+All endpoints below (including `/search`, `/info`, `/search_count`, and Cashu mint `/v1/*`) are served from this URL.
 
 ## Agent Safety Policy (Required)
 
@@ -119,16 +140,15 @@ This API uses the HTTP 402 Payment Required status with the `X-Cashu` header for
 4. Retry the request with the `X-Cashu` header set to the token string (e.g. `cashuB...`).
 5. On success, the server responds with HTTP `200` and the search results as JSON.
 
-If you have a Cashu wallet skill (such as cocod), you can use its X-Cashu handling commands to parse and settle the 402 response automatically.
 {mpp_section}
 ## Getting xsr Tokens
 
-Use any Cashu wallet that supports custom units to mint xsr tokens from `{mint_url}`.
+Use any Cashu wallet that supports custom units to mint xsr tokens from `{mint_url}`. The mint endpoints are available at `{mint_url}/v1/*`.
 
-1. Create a mint quote for the desired amount of xsr from `{mint_url}`.
-2. Pay the Lightning invoice returned by the mint.
-3. Once the invoice is paid, mint the tokens.
-4. Use the wallet's send function to create a Cashu token string (starts with `cashuB...`).
+1. `POST {mint_url}/v1/mint/quote/bolt11` with body `{{"amount": 1, "unit": "xsr"}}` to request a mint quote. The response includes a `quote` ID and a Lightning `request` (BOLT11 invoice).
+2. Pay the BOLT11 invoice from the response.
+3. `POST {mint_url}/v1/mint/bolt11` with the `quote` ID and blinded messages (`outputs`) to mint the ecash tokens.
+4. Use the wallet's send function to serialize the minted tokens as a Cashu token string (starts with `cashuB...`).
 
 Each token worth 1 xsr pays for one search.
 
@@ -160,14 +180,14 @@ Perform a web search. Requires payment via one of the supported methods.
 
 **Payment required response (402):**
 
-Returned when no payment is provided, the token is invalid, or the token amount is not exactly 1 xsr. Response includes:
+Returned when no payment is provided, the token is invalid, or the token amount is not exactly 1 xsr. The response body is empty. All payment information is in the headers:
 - `X-Cashu` header: NUT-18 payment request specifying the mint, unit, and amount needed.
 - `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice (if MPP is enabled).
 - `Cache-Control: no-store`
 
 **Bad request response (400):**
 
-Returned when the token cannot be parsed or the proofs are invalid.
+Returned when the token cannot be parsed or the proofs are invalid. The response body is empty.
 
 ### `GET /info`
 
@@ -191,22 +211,18 @@ Returns the all-time search count.
 
 ### Cashu Mint Protocol (`/v1/*`)
 
-Standard Cashu mint protocol endpoints are available under `/v1/`. These include key discovery, minting, melting, swaps, and other NUT operations. Use these if your wallet needs to interact with the mint directly.
+Standard Cashu mint protocol endpoints are available under `/v1/` on the same host as the search API (i.e. `{mint_url}/v1/*`). These include key discovery, minting, melting, swaps, and other NUT operations. Use these if your wallet needs to interact with the mint directly.
 
 ## Example (Cashu)
 
 ```
-GET /search?q=what+is+cashu HTTP/1.1
-Host: {mint_url}
-X-Cashu: cashuBo2F0...
+curl -H "X-Cashu: cashuBo2F0..." "{mint_url}/search?q=what+is+cashu"
 ```
 
 ## Example (MPP Lightning)
 
 ```
-GET /search?q=what+is+cashu HTTP/1.1
-Host: {mint_url}
-Authorization: Payment eyJjaGFsbGVuZ2UiOns...
+curl -H "Authorization: Payment eyJjaGFsbGVuZ2UiOns..." "{mint_url}/search?q=what+is+cashu"
 ```
 
 ## Important Details
@@ -224,8 +240,8 @@ Authorization: Payment eyJjaGFsbGVuZ2UiOns...
 - **xsr**: Custom Cashu unit representing one search result. 1 xsr = 1 search.
 - **Token**: A transferable Cashu string (starting with `cashuB...`) representing value.
 - **X-Cashu**: HTTP header used to carry Cashu payment requests (server to client) and payment tokens (client to server).
-- **MPP**: Machine Payments Protocol - an HTTP 402-based payment scheme using `WWW-Authenticate` and `Authorization` headers.
-- **BOLT11**: Lightning Network invoice format used for MPP Lightning charge payments.
+- **MPP**: Machine Payments Protocol (https://mpp.dev/protocol) - an HTTP 402-based payment scheme using `WWW-Authenticate` and `Authorization` headers with support for multiple payment methods including Lightning.
+- **BOLT11**: Lightning Network invoice format used for MPP Lightning charge payments (https://mpp.dev/payment-methods/lightning).
 - **NUT-18**: Cashu protocol specification for payment requests.
 - **NUT-24**: Cashu protocol specification for HTTP 402 payment flow using the X-Cashu header.
 - **402 Payment Required**: HTTP status code indicating payment is needed before the request can be fulfilled.
@@ -665,6 +681,8 @@ pub fn search_router(state: ApiState) -> Router {
         .route("/search", get(get_search))
         .route("/search_count", get(get_search_count))
         .route("/agent", get(get_agent_instructions))
+        .route("/llm.txt", get(get_agent_instructions))
+        .route("/skills.md", get(get_agent_instructions))
         .with_state(state)
 }
 

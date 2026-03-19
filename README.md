@@ -54,7 +54,7 @@ curl -H "X-Cashu: cashuB..." "http://localhost:3338/search?q=what+is+cashu"
 
 ## Example: MPP Lightning Payment
 
-The MPP flow uses standard HTTP headers per the [Lightning charge spec](https://paymentauth.org/draft-lightning-charge-00). A `justfile` is included with helper recipes (requires `curl`, `jq`, `python3`).
+The MPP flow uses the [Machine Payments Protocol](https://mpp.dev/protocol) with the [Lightning charge](https://paymentauth.org/draft-lightning-charge-00) payment method. A `justfile` is included with helper recipes (requires `curl`, `jq`, `python3`).
 
 ### Step 1: Get the 402 challenge
 
