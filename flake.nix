@@ -1,5 +1,5 @@
 {
-  description = "CDK Flake";
+  description = "Athenut Mint";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -16,9 +16,16 @@
   };
 
   outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
+    let
+      overlays = [
+        (import rust-overlay)
+        (final: prev: {
+          athenut-mint = final.callPackage ./nix/package.nix { };
+        })
+      ];
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import rust-overlay) ];
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
@@ -86,6 +93,9 @@
         ];
       in
       {
+        packages.default = pkgs.athenut-mint;
+        packages.athenut-mint = pkgs.athenut-mint;
+
         checks = {
         };
 
@@ -114,5 +124,9 @@
             default = nightly;
           };
       }
-    );
+    )
+    // {
+      nixosModules.default = import ./nix/modules/athenut-mint.nix;
+      nixosModules.athenut-mint = import ./nix/modules/athenut-mint.nix;
+    };
 }
