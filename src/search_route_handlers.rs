@@ -40,9 +40,7 @@ async fn get_info(State(state): State<ApiState>) -> Result<Json<Info>, StatusCod
     Ok(Json(state.info))
 }
 
-async fn get_agent_instructions(
-    State(state): State<ApiState>,
-) -> (StatusCode, HeaderMap, String) {
+async fn get_agent_instructions(State(state): State<ApiState>) -> (StatusCode, HeaderMap, String) {
     let mint_url = &state.info.mint;
     let has_mpp = state.mpp_state.is_some();
 
@@ -264,10 +262,7 @@ curl -H "Authorization: Payment eyJjaGFsbGVuZ2UiOns..." "{mint_url}/search?q=wha
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        "text/plain; charset=utf-8".parse().unwrap(),
-    );
+    headers.insert("Content-Type", "text/plain; charset=utf-8".parse().unwrap());
 
     (StatusCode::OK, headers, body)
 }
@@ -308,11 +303,14 @@ async fn kagi_search(
         )
     })?;
 
-    let results: KagiSearchResponse =
-        serde_json::from_value(json_response).map_err(|e| {
-            tracing::error!("Invalid response from Kagi: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new(), String::new())
-        })?;
+    let results: KagiSearchResponse = serde_json::from_value(json_response).map_err(|e| {
+        tracing::error!("Invalid response from Kagi: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            HeaderMap::new(),
+            String::new(),
+        )
+    })?;
 
     tracing::info!(
         "Kagi search completed: {}ms from {}",
