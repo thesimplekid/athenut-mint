@@ -51,3 +51,11 @@ mint_url = "https://backing-mint.example.com"
 seed = "your-wallet-seed-here"
 # Cost per XSR token in cents (defaults to 3)
 cost_per_xsr_cents = 3
+
+[mpp]
+# Enable MPP (Machine Payments Protocol) Lightning charge payments
+# When enabled, 402 responses include a WWW-Authenticate: Payment header
+# with a BOLT11 invoice alongside the existing X-Cashu header
+enabled = true
+# Realm for WWW-Authenticate header (defaults to the info.url value)
+# realm = "api.example.com"

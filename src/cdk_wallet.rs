@@ -59,32 +59,55 @@ impl CashuWalletBackend {
         kagi_auth_token: &str,
         cost_per_xsr_cents: u64,
     ) -> anyhow::Result<Self> {
-        let mnemonic = bip39::Mnemonic::parse(mnemonic)
-            .map_err(|e| anyhow::anyhow!("Invalid mnemonic: {}", e))?;
-        let seed = mnemonic.to_seed("");
+        let wallet = create_backing_wallet(mint_url, mnemonic, home_dir).await?;
+        Ok(Self::with_wallet(
+            wallet,
+            kagi_auth_token,
+            cost_per_xsr_cents,
+        ))
+    }
 
-        let db_path = home_dir.join("cdk_wallet.sqlite");
-        let localstore = WalletSqliteDatabase::new(&db_path).await?;
-
-        let wallet = Wallet::new(
-            mint_url,
-            CurrencyUnit::Sat,
-            Arc::new(localstore),
-            seed,
-            None,
-        )?;
-
+    /// Create a CashuWalletBackend using an existing shared wallet.
+    pub fn with_wallet(
+        wallet: Arc<Wallet>,
+        kagi_auth_token: &str,
+        cost_per_xsr_cents: u64,
+    ) -> Self {
         let (pending_mint_tx, pending_mint_rx) = mpsc::unbounded_channel();
 
-        Ok(Self {
-            wallet: Arc::new(wallet),
+        Self {
+            wallet,
             wait_invoice_active: Arc::new(AtomicBool::new(false)),
             pending_mint_tx,
             pending_mint_rx: std::sync::Mutex::new(Some(pending_mint_rx)),
             kagi_auth_token: kagi_auth_token.to_string(),
             cost_per_xsr_cents,
-        })
+        }
     }
+}
+
+/// Create a backing Cashu wallet instance.
+pub async fn create_backing_wallet(
+    mint_url: &str,
+    mnemonic: &str,
+    home_dir: &Path,
+) -> anyhow::Result<Arc<Wallet>> {
+    let mnemonic =
+        bip39::Mnemonic::parse(mnemonic).map_err(|e| anyhow::anyhow!("Invalid mnemonic: {}", e))?;
+    let seed = mnemonic.to_seed("");
+
+    let db_path = home_dir.join("cdk_wallet.sqlite");
+    let localstore = WalletSqliteDatabase::new(&db_path).await?;
+
+    let wallet = Wallet::new(
+        mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(localstore),
+        seed,
+        None,
+    )?;
+
+    Ok(Arc::new(wallet))
 }
 
 #[async_trait]
@@ -414,7 +437,7 @@ struct PriceResponse {
     usd: u64,
 }
 
-async fn get_usd_price() -> Result<u64, Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub async fn get_usd_price() -> Result<u64, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let client = reqwest::Client::new();
     let response = client
         .get("https://mempool.space/api/v1/prices")
@@ -426,7 +449,7 @@ async fn get_usd_price() -> Result<u64, Box<dyn std::error::Error + Send + Sync 
     Ok(response.usd)
 }
 
-fn cents_to_msats(cents: u64, btc_price_dollars: u64) -> u64 {
+pub fn cents_to_msats(cents: u64, btc_price_dollars: u64) -> u64 {
     let bitcoin_price_cents = btc_price_dollars * 100;
     let msats = (cents as u128 * 100_000_000_000u128) / bitcoin_price_cents as u128;
     let rounded_sats = msats.div_ceil(1000);

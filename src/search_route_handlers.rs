@@ -16,6 +16,7 @@ use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::mpp::{self, MppState};
 use crate::XSR_UNIT;
 
 const KV_SEARCH_NAMESPACE: &str = "athenut";
@@ -37,20 +38,58 @@ async fn get_agent_instructions(
     State(state): State<ApiState>,
 ) -> (StatusCode, HeaderMap, String) {
     let mint_url = &state.info.mint;
+    let has_mpp = state.mpp_state.is_some();
+
+    let mpp_section = if has_mpp {
+        r#"
+
+## MPP Lightning Payment Flow (Alternative)
+
+This API also supports the Machine Payments Protocol (MPP) using Lightning Network BOLT11 invoices.
+
+### Flow
+
+1. Send `GET /search?q=<query>` without any payment headers.
+2. The server responds with HTTP `402 Payment Required` with:
+   - `X-Cashu` header: Cashu payment request (NUT-18 format)
+   - `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice
+3. Choose one payment method:
+   - **Option A (Cashu):** Pay with a Cashu token in the `X-Cashu` request header.
+   - **Option B (MPP Lightning):** Pay the BOLT11 invoice from the challenge, then retry with `Authorization: Payment <credential>` header containing the payment preimage.
+4. On success, the server responds with HTTP `200` and the search results as JSON.
+
+### MPP Credential Format
+
+The `Authorization` header carries a base64url-encoded JSON credential:
+
+```json
+{
+  "challenge": { ... },  // Echo of the challenge from WWW-Authenticate
+  "payload": {
+    "preimage": "<64-char hex preimage>"
+  }
+}
+```
+
+The server verifies `sha256(preimage) == paymentHash` and returns the resource with a `Payment-Receipt` header.
+"#
+    } else {
+        ""
+    };
 
     let body = format!(
         r#"---
 name: athenut-search
-description: Private web search API that accepts Cashu ecash tokens (xsr unit) as payment via the HTTP 402 X-Cashu protocol (NUT-24)
+description: Private web search API that accepts payments via Cashu ecash tokens (X-Cashu) or MPP Lightning invoices (WWW-Authenticate: Payment)
 metadata:
   type: http-api
-  protocol: cashu-x-cashu
+  protocol: cashu-x-cashu, mpp-lightning
   unit: xsr
 ---
 
 # Athenut Search - Paid Web Search API
 
-Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header.
+Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header, or by paying a Lightning invoice via the MPP protocol.
 
 The Cashu mint for this service is at: {mint_url}
 
@@ -59,8 +98,8 @@ The Cashu mint for this service is at: {mint_url}
 When acting as an AGENT with this skill:
 
 - Always ask for explicit user permission before spending tokens on a search, unless the user has already clearly instructed you to perform the search.
-- When receiving an HTTP 402 response, inspect the `X-Cashu` response header to understand the payment requirements before spending.
-- Never expose or log token values or wallet credentials.
+- When receiving an HTTP 402 response, inspect the payment headers to understand the payment requirements before spending.
+- Never expose or log token values, wallet credentials, or payment preimages.
 
 ## HTTP 402 Payment Flow (NUT-24 / X-Cashu)
 
@@ -75,7 +114,7 @@ This API uses the HTTP 402 Payment Required status with the `X-Cashu` header for
 5. On success, the server responds with HTTP `200` and the search results as JSON.
 
 If you have a Cashu wallet skill (such as cocod), you can use its X-Cashu handling commands to parse and settle the 402 response automatically.
-
+{mpp_section}
 ## Getting xsr Tokens
 
 Use any Cashu wallet that supports custom units to mint xsr tokens from `{mint_url}`.
@@ -91,13 +130,14 @@ Each token worth 1 xsr pays for one search.
 
 ### `GET /search`
 
-Perform a web search. Requires payment of 1 xsr via the `X-Cashu` header.
+Perform a web search. Requires payment via one of the supported methods.
 
 **Query parameters:**
 - `q` (required) - The search query string.
 
-**Request headers:**
-- `X-Cashu` (required) - A Cashu v4 token (starting with `cashuB...`) worth exactly 1 xsr, minted from `{mint_url}`.
+**Request headers (one of):**
+- `X-Cashu` - A Cashu v4 token (starting with `cashuB...`) worth exactly 1 xsr, minted from `{mint_url}`.
+- `Authorization: Payment <credential>` - An MPP Lightning credential with a valid payment preimage (base64url-encoded JSON).
 
 **Success response (200):**
 
@@ -114,7 +154,10 @@ Perform a web search. Requires payment of 1 xsr via the `X-Cashu` header.
 
 **Payment required response (402):**
 
-Returned when no token is provided, the token is invalid, or the token amount is not exactly 1 xsr. The `X-Cashu` response header contains a NUT-18 payment request specifying the mint, unit, and amount needed.
+Returned when no payment is provided, the token is invalid, or the token amount is not exactly 1 xsr. Response includes:
+- `X-Cashu` header: NUT-18 payment request specifying the mint, unit, and amount needed.
+- `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice (if MPP is enabled).
+- `Cache-Control: no-store`
 
 **Bad request response (400):**
 
@@ -144,12 +187,20 @@ Returns the all-time search count.
 
 Standard Cashu mint protocol endpoints are available under `/v1/`. These include key discovery, minting, melting, swaps, and other NUT operations. Use these if your wallet needs to interact with the mint directly.
 
-## Example
+## Example (Cashu)
 
 ```
 GET /search?q=what+is+cashu HTTP/1.1
 Host: {mint_url}
 X-Cashu: cashuBo2F0...
+```
+
+## Example (MPP Lightning)
+
+```
+GET /search?q=what+is+cashu HTTP/1.1
+Host: {mint_url}
+Authorization: Payment eyJjaGFsbGVuZ2UiOns...
 ```
 
 ## Important Details
@@ -158,6 +209,7 @@ X-Cashu: cashuBo2F0...
 - The unit is `xsr`, not `sat` or any other standard unit.
 - Tokens must be minted from `{mint_url}`.
 - The `X-Cashu` header value is the raw token string (starting with `cashuB...`).
+- For MPP, the `Authorization` header carries a base64url-encoded JSON credential with the payment preimage.
 
 ## Concepts
 
@@ -166,11 +218,14 @@ X-Cashu: cashuBo2F0...
 - **xsr**: Custom Cashu unit representing one search result. 1 xsr = 1 search.
 - **Token**: A transferable Cashu string (starting with `cashuB...`) representing value.
 - **X-Cashu**: HTTP header used to carry Cashu payment requests (server to client) and payment tokens (client to server).
+- **MPP**: Machine Payments Protocol - an HTTP 402-based payment scheme using `WWW-Authenticate` and `Authorization` headers.
+- **BOLT11**: Lightning Network invoice format used for MPP Lightning charge payments.
 - **NUT-18**: Cashu protocol specification for payment requests.
 - **NUT-24**: Cashu protocol specification for HTTP 402 payment flow using the X-Cashu header.
 - **402 Payment Required**: HTTP status code indicating payment is needed before the request can be fulfilled.
 "#,
-        mint_url = mint_url
+        mint_url = mint_url,
+        mpp_section = mpp_section
     );
 
     let mut headers = HeaderMap::new();
@@ -182,21 +237,107 @@ X-Cashu: cashuBo2F0...
     (StatusCode::OK, headers, body)
 }
 
+// -- Shared Kagi search helper --
+
+/// Perform a Kagi web search and return parsed results.
+async fn kagi_search(
+    kagi_auth_token: &str,
+    query: &str,
+) -> Result<Vec<SearchResult>, (StatusCode, HeaderMap)> {
+    let time = unix_time();
+
+    let response = reqwest::Client::new()
+        .get("https://kagi.com/api/v0/search")
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bot {}", kagi_auth_token),
+        )
+        .query(&[("q", query)])
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Kagi request failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
+        })?;
+
+    let json_response: Value = response.json().await.map_err(|e| {
+        tracing::error!("Failed to parse Kagi response: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
+    })?;
+
+    let results: KagiSearchResponse =
+        serde_json::from_value(json_response).map_err(|e| {
+            tracing::error!("Invalid response from Kagi: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
+        })?;
+
+    tracing::info!(
+        "Kagi search completed: {}ms from {}",
+        results.meta.ms,
+        results.meta.node
+    );
+
+    let search_results: Vec<SearchResult> = results
+        .data
+        .into_iter()
+        .flat_map(|s| match s {
+            KagiSearchObject::SearchResult(sr) => Some(sr.into()),
+            KagiSearchObject::RelatedSearches(_) => None,
+        })
+        .collect();
+
+    tracing::info!("Kagi total time: {}", unix_time() - time);
+
+    Ok(search_results)
+}
+
+// -- Main search handler --
+
 async fn get_search(
     headers: HeaderMap,
     q: Query<Params>,
     State(state): State<ApiState>,
-) -> Result<Json<Vec<SearchResult>>, (StatusCode, HeaderMap)> {
-    let mint_url = state.info.mint;
+) -> Result<(StatusCode, HeaderMap, Json<Vec<SearchResult>>), (StatusCode, HeaderMap)> {
+    // Check for MPP Authorization header first
+    if let Some(auth_header) = headers.get("Authorization") {
+        let auth_str = auth_header.to_str().map_err(|_| {
+            tracing::error!("Invalid Authorization header encoding");
+            (StatusCode::BAD_REQUEST, HeaderMap::new())
+        })?;
 
-    let payment_request = PaymentRequestBuilder::default()
-        .unit(XSR_UNIT.clone())
-        .amount(1)
-        .add_mint(mint_url)
-        .build();
+        if auth_str.starts_with("Payment ") {
+            return handle_mpp_payment(auth_str, &q.q, &state).await;
+        }
+    }
 
-    // Create payment required response with header
+    // Check for Cashu X-Cashu header
+    if let Some(x_cashu_header) = headers.get("X-Cashu") {
+        let x_cashu = x_cashu_header.to_str().map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
+        })?;
+
+        return handle_cashu_payment(x_cashu, &q.q, &state).await;
+    }
+
+    // No payment header present -- return 402 with both payment options
+    build_payment_required_response(&q.q, &state).await
+}
+
+/// Handle payment via Cashu X-Cashu token (existing flow).
+async fn handle_cashu_payment(
+    x_cashu: &str,
+    query: &str,
+    state: &ApiState,
+) -> Result<(StatusCode, HeaderMap, Json<Vec<SearchResult>>), (StatusCode, HeaderMap)> {
+    let mint_url = state.info.mint.clone();
+
     let payment_required_response = || {
+        let payment_request = PaymentRequestBuilder::default()
+            .unit(XSR_UNIT.clone())
+            .amount(1)
+            .add_mint(mint_url.clone())
+            .build();
+
         let mut headers = HeaderMap::new();
         let header_value = match payment_request.to_string().parse() {
             Ok(hv) => hv,
@@ -209,21 +350,11 @@ async fn get_search(
         (StatusCode::PAYMENT_REQUIRED, headers)
     };
 
-    let x_cashu = headers
-        .get("X-Cashu")
-        .ok_or_else(payment_required_response)?
-        .to_str()
-        .map_err(|_| {
-            let headers = HeaderMap::new();
-            (StatusCode::INTERNAL_SERVER_ERROR, headers)
-        })?;
-
     let token: TokenV4 = match TokenV4::from_str(x_cashu) {
         Ok(token) => token,
         Err(err) => {
             tracing::error!("Failed to parse token: {}", err);
-            let headers = HeaderMap::new();
-            return Err((StatusCode::BAD_REQUEST, headers));
+            return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
         }
     };
 
@@ -231,8 +362,7 @@ async fn get_search(
         Ok(amount) => amount,
         Err(err) => {
             tracing::error!("Failed to get token value: {}", err);
-            let headers = HeaderMap::new();
-            return Err((StatusCode::BAD_REQUEST, headers));
+            return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
         }
     };
 
@@ -242,26 +372,23 @@ async fn get_search(
 
     let melt_quote_request = MeltQuoteRequest::Custom(cdk_common::MeltQuoteCustomRequest {
         method: "bolt11".to_string(),
-        request: q.q.clone(),
+        request: query.to_string(),
         unit: XSR_UNIT.clone(),
         extra: Value::Null,
     });
 
-    let mint = state.mint;
+    let mint = &state.mint;
 
     let quote = mint.get_melt_quote(melt_quote_request).await.map_err(|e| {
         tracing::error!("Failed to get melt quote: {}", e);
-        let headers = HeaderMap::new();
-        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+        (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
     })?;
 
     let keysets = mint.keysets().keysets;
 
-    // REVIEW: I think mint keysets is only the active ones and we should have old ones too
     let proofs = token.proofs(&keysets).map_err(|e| {
         tracing::error!("Failed to get proofs from token: {}", e);
-        let headers = HeaderMap::new();
-        (StatusCode::BAD_REQUEST, headers)
+        (StatusCode::BAD_REQUEST, HeaderMap::new())
     })?;
 
     let proof = proofs
@@ -270,35 +397,25 @@ async fn get_search(
         .ok_or_else(payment_required_response)?;
 
     let time = unix_time();
-
     let melt_request = MeltRequest::new(quote.quote, vec![proof], None);
-
     tracing::info!("Time to verify: {}", unix_time() - time);
-
-    let time = unix_time();
-
-    tracing::info!("Send: {}", unix_time() - time);
 
     let time = unix_time();
     let melt_res = mint.melt(&melt_request).await.map_err(|e| {
         tracing::error!("Failed to melt: {}", e);
-        let headers = HeaderMap::new();
-        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+        (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
     })?;
 
     tracing::info!("Kagi time: {}", unix_time() - time);
-    let time = unix_time();
 
     let json_response = melt_res.payment_preimage.ok_or_else(|| {
         tracing::error!("Melt response missing preimage");
-        let headers = HeaderMap::new();
-        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+        (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
     })?;
 
     let results: KagiSearchResponse = serde_json::from_str(&json_response).map_err(|_| {
         tracing::error!("Invalid response from kagi");
-        let headers = HeaderMap::new();
-        (StatusCode::INTERNAL_SERVER_ERROR, headers)
+        (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
     })?;
 
     tracing::info!(
@@ -307,26 +424,170 @@ async fn get_search(
         results.meta.node
     );
 
-    let mint_clone = Arc::clone(&mint);
+    let mint_clone = Arc::clone(mint);
     tokio::spawn(async move {
         if let Err(err) = add_search(&mint_clone).await {
             tracing::error!("Could not update search counter: {}", err);
         }
     });
 
-    let search_results: Vec<KagiSearchResult> = results
+    let search_results: Vec<SearchResult> = results
         .data
         .into_iter()
         .flat_map(|s| match s {
-            KagiSearchObject::SearchResult(sr) => Some(sr),
+            KagiSearchObject::SearchResult(sr) => Some(sr.into()),
             KagiSearchObject::RelatedSearches(_) => None,
         })
         .collect();
 
-    let results: Vec<SearchResult> = search_results.into_iter().map(|r| r.into()).collect();
+    Ok((StatusCode::OK, HeaderMap::new(), Json(search_results)))
+}
 
-    tracing::info!("Json time: {}", unix_time() - time);
-    Ok(Json(results))
+/// Handle payment via MPP Lightning charge credential.
+async fn handle_mpp_payment(
+    auth_header: &str,
+    query: &str,
+    state: &ApiState,
+) -> Result<(StatusCode, HeaderMap, Json<Vec<SearchResult>>), (StatusCode, HeaderMap)> {
+    let _mpp_state = state.mpp_state.as_ref().ok_or_else(|| {
+        tracing::error!("MPP payment received but MPP is not enabled");
+        (StatusCode::BAD_REQUEST, HeaderMap::new())
+    })?;
+
+    // Parse the credential from the Authorization header
+    let credential = mpp::parse_credential(auth_header).map_err(|e| {
+        tracing::error!("Failed to parse MPP credential: {}", e);
+        (StatusCode::BAD_REQUEST, HeaderMap::new())
+    })?;
+
+    let challenge_id = credential.challenge.id.clone();
+
+    // Look up and atomically consume the challenge
+    let challenge_state = mpp::consume_challenge(&state.mint, &challenge_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to consume MPP challenge: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new())
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(
+                "MPP challenge not found or already consumed: {}",
+                challenge_id
+            );
+            (StatusCode::BAD_REQUEST, HeaderMap::new())
+        })?;
+
+    // Verify the echoed challenge matches the stored challenge
+    if !mpp::verify_challenge_echo(&credential.challenge, &challenge_state.challenge_params) {
+        tracing::warn!("MPP challenge echo mismatch for: {}", challenge_id);
+        return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
+    }
+
+    // Check expiry
+    let now = unix_time();
+    if now > challenge_state.expires_at {
+        tracing::warn!("MPP challenge expired: {}", challenge_id);
+        return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
+    }
+
+    // Verify sha256(preimage) == payment_hash
+    if !mpp::verify_preimage(&credential.payload.preimage, &challenge_state.payment_hash) {
+        tracing::warn!("MPP preimage verification failed for: {}", challenge_id);
+        return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
+    }
+
+    // Verify the query matches the one the challenge was issued for
+    if query != challenge_state.query {
+        tracing::warn!(
+            "MPP query mismatch for challenge {}: expected '{}', got '{}'",
+            challenge_id,
+            challenge_state.query,
+            query
+        );
+        return Err((StatusCode::BAD_REQUEST, HeaderMap::new()));
+    }
+
+    tracing::info!("MPP payment verified for challenge: {}", challenge_id);
+
+    // Perform the Kagi search directly
+    let results = kagi_search(&state.settings.kagi_auth_token, query).await?;
+
+    // Update search counter
+    let mint_clone = Arc::clone(&state.mint);
+    tokio::spawn(async move {
+        if let Err(err) = add_search(&mint_clone).await {
+            tracing::error!("Could not update search counter: {}", err);
+        }
+    });
+
+    // Build the Payment-Receipt header
+    let receipt_value = mpp::build_receipt(&challenge_id, &challenge_state.payment_hash);
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        "Payment-Receipt",
+        receipt_value.parse().unwrap_or_else(|_| {
+            tracing::error!("Failed to format Payment-Receipt header");
+            "".parse().unwrap()
+        }),
+    );
+
+    Ok((StatusCode::OK, response_headers, Json(results)))
+}
+
+/// Build a 402 Payment Required response with both Cashu and MPP payment options.
+async fn build_payment_required_response(
+    query: &str,
+    state: &ApiState,
+) -> Result<(StatusCode, HeaderMap, Json<Vec<SearchResult>>), (StatusCode, HeaderMap)> {
+    let mint_url = state.info.mint.clone();
+
+    let payment_request = PaymentRequestBuilder::default()
+        .unit(XSR_UNIT.clone())
+        .amount(1)
+        .add_mint(mint_url)
+        .build();
+
+    let mut headers = HeaderMap::new();
+
+    // Add X-Cashu header (Cashu payment request)
+    let cashu_header_value = match payment_request.to_string().parse() {
+        Ok(hv) => hv,
+        Err(_) => {
+            tracing::error!("Failed to parse payment request to header value");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new()));
+        }
+    };
+    headers.insert("X-Cashu", cashu_header_value);
+
+    // Add WWW-Authenticate header (MPP Lightning challenge) if MPP is enabled
+    if let Some(mpp_state) = &state.mpp_state {
+        match mpp::generate_challenge(mpp_state, "Athenut web search", query).await {
+            Ok((challenge_state, www_auth_value)) => {
+                // Store the challenge state in the KV store
+                if let Err(e) = mpp::store_challenge(&state.mint, &challenge_state).await {
+                    tracing::error!("Failed to store MPP challenge: {}", e);
+                } else {
+                    match www_auth_value.parse() {
+                        Ok(hv) => {
+                            headers.insert("WWW-Authenticate", hv);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to parse WWW-Authenticate header value: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to generate MPP challenge: {}", e);
+                // Continue without MPP -- Cashu is still available
+            }
+        }
+    }
+
+    // Add Cache-Control: no-store per the spec
+    headers.insert("Cache-Control", "no-store".parse().unwrap());
+
+    Err((StatusCode::PAYMENT_REQUIRED, headers))
 }
 
 #[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize)]
@@ -405,6 +666,7 @@ pub struct ApiState {
     pub mint: Arc<Mint>,
     pub settings: Settings,
     pub reqwest_client: ReqwestClient,
+    pub mpp_state: Option<Arc<MppState>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

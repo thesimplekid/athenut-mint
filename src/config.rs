@@ -33,6 +33,28 @@ pub struct SearchSettings {
     pub kagi_auth_token: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MppConfig {
+    /// Whether MPP Lightning charge payments are enabled
+    #[serde(default = "default_mpp_enabled")]
+    pub enabled: bool,
+    /// Realm for WWW-Authenticate header (defaults to domain from info.url)
+    pub realm: Option<String>,
+}
+
+fn default_mpp_enabled() -> bool {
+    true
+}
+
+impl Default for MppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            realm: None,
+        }
+    }
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -40,6 +62,8 @@ pub struct Settings {
     pub mint_info: MintInfo,
     pub search_settings: SearchSettings,
     pub cashu_wallet: CashuWallet,
+    #[serde(default)]
+    pub mpp: MppConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

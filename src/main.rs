@@ -4,8 +4,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
-use athenut_mint::cdk_wallet::CashuWalletBackend;
+use athenut_mint::cdk_wallet::{create_backing_wallet, CashuWalletBackend};
 use athenut_mint::cli::CLIArgs;
+use athenut_mint::mpp::MppState;
 use athenut_mint::search_route_handlers::{search_router, ApiState};
 use athenut_mint::{config, work_dir, XSR_UNIT};
 use axum::Router;
@@ -102,14 +103,19 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .ok_or(anyhow!("cashu_wallet seed not defined"))?;
 
-    let cdk_wallet_backend = CashuWalletBackend::new(
+    // Create the backing Cashu wallet (shared between payment backend and MPP)
+    let backing_wallet = create_backing_wallet(
         &settings.cashu_wallet.mint_url,
         cashu_wallet_seed,
         &work_dir,
-        &settings.search_settings.kagi_auth_token,
-        settings.cashu_wallet.cost_per_xsr_cents,
     )
     .await?;
+
+    let cdk_wallet_backend = CashuWalletBackend::with_wallet(
+        Arc::clone(&backing_wallet),
+        &settings.search_settings.kagi_auth_token,
+        settings.cashu_wallet.cost_per_xsr_cents,
+    );
 
     let cdk_wallet_backend: DynMintPayment = Arc::new(cdk_wallet_backend);
 
@@ -201,7 +207,26 @@ async fn main() -> anyhow::Result<()> {
 
     let search_settings = athenut_mint::search_route_handlers::Settings {
         kagi_auth_token: settings.search_settings.kagi_auth_token,
-        mint_url,
+        mint_url: mint_url.clone(),
+    };
+
+    // Initialize MPP state if enabled
+    let mpp_state = if settings.mpp.enabled {
+        let realm = settings.mpp.realm.unwrap_or_else(|| {
+            // Extract domain from the mint URL for the realm
+            settings.info.url.clone()
+        });
+
+        tracing::info!("MPP Lightning charge enabled with realm: {}", realm);
+
+        Some(Arc::new(MppState {
+            realm,
+            wallet: Arc::clone(&backing_wallet),
+            cost_per_xsr_cents: settings.cashu_wallet.cost_per_xsr_cents,
+        }))
+    } else {
+        tracing::info!("MPP Lightning charge disabled");
+        None
     };
 
     let api_state = ApiState {
@@ -209,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
         mint: Arc::clone(&mint),
         settings: search_settings,
         reqwest_client: Client::new(),
+        mpp_state,
     };
 
     let search_router = search_router(api_state);

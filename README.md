@@ -1,6 +1,6 @@
 # Athenut Mint
 
-A Cashu mint-backed search API service.
+A Cashu mint-backed search API service. Accepts payment via Cashu ecash tokens (`X-Cashu` header) or [MPP](https://mpp.dev) Lightning charge (`WWW-Authenticate: Payment` header).
 
 ## API Endpoints
 
@@ -14,19 +14,29 @@ curl "http://localhost:3338/info"
 
 ### GET /search
 
-Search Kagi via the Cashu mint. Requires a valid Cashu token in the `X-Cashu` header.
+Search the web via Kagi. Requires payment via one of the supported methods.
 
 **Query Parameters:**
 - `q` (required): Search query string
 
-**Headers:**
-- `X-Cashu`: Cashu token for payment
+**Headers (one of):**
+- `X-Cashu`: Cashu v4 token worth 1 xsr
+- `Authorization: Payment <credential>`: MPP Lightning charge credential with payment preimage
 
 **Response:** JSON array of search results
 
 ```bash
-curl -H "X-Cashu: <your_cashu_token>" "http://localhost:3338/search?q=rust+programming"
+# Pay with Cashu
+curl -H "X-Cashu: <your_cashu_token>" "http://localhost:3338/search?q=what+is+cashu"
+
+# Pay with MPP Lightning (see below for full flow)
+curl -H "Authorization: Payment <credential>" "http://localhost:3338/search?q=what+is+cashu"
 ```
+
+If no payment header is provided, returns `402 Payment Required` with:
+- `X-Cashu` header: Cashu payment request (NUT-18)
+- `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice
+- `Cache-Control: no-store`
 
 ### GET /search_count
 
@@ -36,13 +46,95 @@ Returns the total number of searches performed.
 curl "http://localhost:3338/search_count"
 ```
 
-## Example: Search Request with Token
+## Example: Cashu Payment
 
 ```bash
-curl -H "X-Cashu: CashuTOKEN123..." "http://localhost:3338/search?q=bitcoin"
+curl -H "X-Cashu: cashuB..." "http://localhost:3338/search?q=what+is+cashu"
 ```
 
-If no token is provided, returns `402 Payment Required` with the payment request in the `X-Cashu` header.
+## Example: MPP Lightning Payment
+
+The MPP flow uses standard HTTP headers per the [Lightning charge spec](https://paymentauth.org/draft-lightning-charge-00). A `justfile` is included with helper recipes (requires `curl`, `jq`, `python3`).
+
+### Step 1: Get the 402 challenge
+
+```bash
+just challenge "what is cashu"
+```
+
+The response includes a `WWW-Authenticate: Payment` header like:
+
+```
+WWW-Authenticate: Payment id="a1b2c3", realm="https://search.example.com", method="lightning", intent="charge", request="eyJhbW91bnQ...", expires="2026-03-20T12:30:00Z"
+```
+
+### Step 2: Decode the request to see the invoice
+
+Copy the `request="..."` value from the header:
+
+```bash
+just decode-request 'eyJhbW91bnQ...'
+```
+
+Output:
+
+```json
+{
+  "amount": "43",
+  "currency": "sat",
+  "description": "Athenut web search",
+  "methodDetails": {
+    "invoice": "lnbc430n1p5mchrq...",
+    "paymentHash": "47c5effa...",
+    "network": "mainnet"
+  }
+}
+```
+
+### Step 3: Extract and pay the invoice
+
+```bash
+just extract-invoice 'eyJhbW91bnQ...'
+# Output: lnbc430n1p5mchrq...
+```
+
+Pay the invoice with any Lightning wallet. Save the payment preimage (64-char hex string) returned by your wallet.
+
+### Step 4: Build the credential and search
+
+Pass the full `WWW-Authenticate` header value and the preimage:
+
+```bash
+just build-credential 'Payment id="a1b2c3", realm="...", method="lightning", intent="charge", request="eyJ...", expires="2026-..."' 'a3f1b2c3d4e5f6...e209'
+# Output: Payment eyJjaGFsbGVuZ2...
+```
+
+Use the output (without the `Payment ` prefix) to search:
+
+```bash
+just mpp-search 'eyJjaGFsbGVuZ2...' "what is cashu"
+```
+
+Or with raw curl:
+
+```bash
+curl -H "Authorization: Payment eyJjaGFsbGVuZ2..." "http://localhost:3338/search?q=what+is+cashu"
+```
+
+The response includes a `Payment-Receipt` header with proof of payment.
+
+## Just Recipes
+
+| Recipe | Description |
+|--------|-------------|
+| `just info` | Get mint info |
+| `just count` | Get all-time search count |
+| `just challenge <query>` | Get 402 challenge headers |
+| `just decode-request <request>` | Decode a base64url request param to JSON |
+| `just extract-invoice <request>` | Extract the BOLT11 invoice from a request param |
+| `just build-credential <www-auth> <preimage>` | Build an Authorization header from challenge + preimage |
+| `just mpp-search <credential> <query>` | Search with an MPP credential |
+| `just cashu-search <token> <query>` | Search with a Cashu token |
 
 ## Nix
 
@@ -103,6 +195,10 @@ kagi_auth_token = "your-kagi-api-token"
 mint_url = "https://your-backing-mint.example.com"
 seed = "your-wallet-seed"
 cost_per_xsr_cents = 3
+
+[mpp]
+enabled = true
+# realm = "https://search.yourdomain.com"
 ```
 
 #### 2. Configure NixOS

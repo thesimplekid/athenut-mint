@@ -9,6 +9,7 @@ use cdk_common::nuts::CurrencyUnit as CommonCurrencyUnit;
 pub mod cdk_wallet;
 pub mod cli;
 pub mod config;
+pub mod mpp;
 pub mod search_route_handlers;
 
 pub static XSR_UNIT: LazyLock<CurrencyUnit> =
