@@ -20,7 +20,13 @@ use crate::mpp::{self, MppState};
 use crate::XSR_UNIT;
 
 const KV_SEARCH_NAMESPACE: &str = "athenut";
-const KV_SEARCH_COUNT_KEY: &str = "search_count";
+const KV_CASHU_SEARCH_COUNT_KEY: &str = "cashu_search_count";
+const KV_MPP_SEARCH_COUNT_KEY: &str = "mpp_search_count";
+
+enum PaymentMethod {
+    Cashu,
+    Mpp,
+}
 
 async fn get_search_count(State(state): State<ApiState>) -> Result<Json<SearchCount>, StatusCode> {
     let mint = state.mint;
@@ -426,7 +432,7 @@ async fn handle_cashu_payment(
 
     let mint_clone = Arc::clone(mint);
     tokio::spawn(async move {
-        if let Err(err) = add_search(&mint_clone).await {
+        if let Err(err) = add_search(&mint_clone, PaymentMethod::Cashu).await {
             tracing::error!("Could not update search counter: {}", err);
         }
     });
@@ -515,7 +521,7 @@ async fn handle_mpp_payment(
     // Update search counter
     let mint_clone = Arc::clone(&state.mint);
     tokio::spawn(async move {
-        if let Err(err) = add_search(&mint_clone).await {
+        if let Err(err) = add_search(&mint_clone, PaymentMethod::Mpp).await {
             tracing::error!("Could not update search counter: {}", err);
         }
     });
@@ -592,14 +598,20 @@ async fn build_payment_required_response(
 
 #[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct SearchCount {
-    pub all_time_search_count: u64,
+    pub cashu_search_count: u64,
+    pub mpp_search_count: u64,
 }
 
-pub async fn add_search(mint: &Mint) -> anyhow::Result<()> {
+async fn add_search(mint: &Mint, payment_method: PaymentMethod) -> anyhow::Result<()> {
+    let kv_key = match payment_method {
+        PaymentMethod::Cashu => KV_CASHU_SEARCH_COUNT_KEY,
+        PaymentMethod::Mpp => KV_MPP_SEARCH_COUNT_KEY,
+    };
+
     let mut tx = mint.localstore().begin_transaction().await?;
 
     let current_count = tx
-        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY)
+        .kv_read(KV_SEARCH_NAMESPACE, "count", kv_key)
         .await?
         .map(|v| {
             let bytes = v.as_slice();
@@ -610,7 +622,7 @@ pub async fn add_search(mint: &Mint) -> anyhow::Result<()> {
     let new_count = current_count + 1;
     let value = new_count.to_le_bytes().to_vec();
 
-    tx.kv_write(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY, &value)
+    tx.kv_write(KV_SEARCH_NAMESPACE, "count", kv_key, &value)
         .await?;
 
     tx.commit().await?;
@@ -619,9 +631,20 @@ pub async fn add_search(mint: &Mint) -> anyhow::Result<()> {
 }
 
 async fn get_search_count_from_mint(mint: &Mint) -> Result<SearchCount, StatusCode> {
-    let count = mint
-        .localstore()
-        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_SEARCH_COUNT_KEY)
+    let store = mint.localstore();
+
+    let cashu_count = store
+        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_CASHU_SEARCH_COUNT_KEY)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|v| {
+            let bytes = v.as_slice();
+            u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))
+        })
+        .unwrap_or(0);
+
+    let mpp_count = store
+        .kv_read(KV_SEARCH_NAMESPACE, "count", KV_MPP_SEARCH_COUNT_KEY)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map(|v| {
@@ -631,7 +654,8 @@ async fn get_search_count_from_mint(mint: &Mint) -> Result<SearchCount, StatusCo
         .unwrap_or(0);
 
     Ok(SearchCount {
-        all_time_search_count: count,
+        cashu_search_count: cashu_count,
+        mpp_search_count: mpp_count,
     })
 }
 
