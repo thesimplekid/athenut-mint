@@ -51,17 +51,39 @@ async fn get_agent_instructions(State(state): State<ApiState>) -> (StatusCode, H
 
 This API also supports the [Machine Payments Protocol (MPP)](https://mpp.dev/protocol) using Lightning Network BOLT11 invoices.
 
-### Flow
+### Quick Commands
+
+1. Get a 402 challenge with the Lightning invoice:
+   ```bash
+   curl -s -D- -o/dev/null -G --data-urlencode "q=<query>" "https://athenut.com/search"
+   ```
+   Look for `WWW-Authenticate: Payment ...` header with `request="..."` value.
+
+2. Extract the BOLT11 invoice from the `request` parameter:
+   ```bash
+   python3 -c "import base64,json,sys; print(json.loads(base64.urlsafe_b64decode(sys.argv[1]+'=='))['methodDetails']['invoice'])" "<request_value>"
+   ```
+
+3. Pay the invoice with any Lightning wallet. Save the preimage (64-char hex).
+
+4. Build the Authorization header (python one-liner):
+   ```bash
+   python3 -c "import base64,json,re,sys; h=sys.argv[1]; p=sys.argv[2]; e=lambda k: re.search(k+r'=\\\"([^\\\"]+)\\\"', h).group(1); c={'challenge':{k:e(k)for k in['id','realm','method','intent','request','expires']},'payload':{'preimage':p}}; print('Payment',base64.urlsafe_b64encode(json.dumps(c,separators=(',',':')).encode()).rstrip(b'=').decode())" '<full www-authenticate header>' '<preimage>'
+   ```
+
+5. Search with the credential:
+   ```bash
+   curl -s -H "Authorization: Payment <credential>" -G --data-urlencode "q=<query>" "https://athenut.com/search"
+   ```
+
+### Full Flow (Details)
 
 1. Send `GET /search?q=<query>` without any payment headers.
-2. The server responds with HTTP `402 Payment Required` with:
+2. Server responds with HTTP `402 Payment Required` with:
    - `X-Cashu` header: Cashu payment request (NUT-18 format)
-   - `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge with a BOLT11 invoice
-3. Parse the `WWW-Authenticate` header to extract the challenge parameters. Example header:
-   ```
-   WWW-Authenticate: Payment id="a1b2c3d4", realm="search.example.com", method="lightning", intent="charge", request="eyJhbW91bnQ...", expires="2026-03-20T12:05:00Z"
-   ```
-4. Base64url-decode the `request` parameter to get a JSON object containing the BOLT11 invoice:
+   - `WWW-Authenticate: Payment ...` header: MPP Lightning charge challenge
+3. Extract `request="eyJhb..."` from the WWW-Authenticate header.
+4. Base64url-decode the request to get invoice details:
    ```json
    {
      "amount": "43",
@@ -74,8 +96,8 @@ This API also supports the [Machine Payments Protocol (MPP)](https://mpp.dev/pro
      }
    }
    ```
-5. Pay the BOLT11 invoice (`methodDetails.invoice`) using a Lightning wallet. The wallet returns a payment preimage (64-char hex string).
-6. Build a credential JSON echoing back the full challenge parameters and including the preimage:
+5. Pay `methodDetails.invoice` with a Lightning wallet. Save the preimage.
+6. Build credential JSON:
    ```json
    {
      "challenge": {
@@ -83,19 +105,15 @@ This API also supports the [Machine Payments Protocol (MPP)](https://mpp.dev/pro
        "realm": "search.example.com",
        "method": "lightning",
        "intent": "charge",
-       "request": "eyJhbW91bnQ...",
+       "request": "eyJhb...",
        "expires": "2026-03-20T12:05:00Z"
      },
-     "payload": {
-       "preimage": "a3f1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e209"
-     }
+     "payload": { "preimage": "<64-char-hex>" }
    }
    ```
-7. Base64url-encode the credential JSON (compact, no padding).
-8. Retry the original request with `Authorization: Payment <base64url-encoded credential>`.
-9. On success, the server responds with HTTP `200` and the search results as JSON, plus a `Payment-Receipt` header.
+7. Base64url-encode (compact, no padding) and retry with `Authorization: Payment <encoded>`.
 
-The server verifies `sha256(preimage) == paymentHash` from the challenge request.
+Server verifies `sha256(preimage) == paymentHash` from the challenge.
 "#
     } else {
         ""
@@ -115,8 +133,18 @@ metadata:
 
 Athenut is a private web search API. Each search costs 1 xsr (search result token). You pay by including a Cashu ecash token in the `X-Cashu` request header, or by paying a Lightning invoice via the [Machine Payments Protocol (MPP)](https://mpp.dev/protocol).
 
-The search API and Cashu mint are co-hosted at the same origin: {mint_url}
+The search API and Cashu mint are co-hosted at https://athenut.com
 All endpoints below (including `/search`, `/info`, `/search_count`, and Cashu mint `/v1/*`) are served from this URL.
+
+## Web Interface (athenut.com)
+
+For simple Lightning payments via browser, use https://athenut.com:
+1. Click "Top Up"
+2. Select number of searches (43 sats per search)
+3. Pay the Lightning invoice
+4. xsr tokens are automatically minted and credited to your session
+
+The web UI uses the same underlying Cashu mint (xsr unit) as the API.
 
 ## Agent Safety Policy (Required)
 
@@ -141,14 +169,20 @@ This API uses the HTTP 402 Payment Required status with the `X-Cashu` header for
 {mpp_section}
 ## Getting xsr Tokens
 
-Use any Cashu wallet that supports custom units to mint xsr tokens from `{mint_url}`. The mint endpoints are available at `{mint_url}/v1/*`.
+Athenut is a Cashu mint that supports the custom `xsr` unit. If you have sats, you can mint xsr tokens directly by paying a Lightning invoice to the mint.
 
-1. `POST {mint_url}/v1/mint/quote/bolt11` with body `{{"amount": 1, "unit": "xsr"}}` to request a mint quote. The response includes a `quote` ID and a Lightning `request` (BOLT11 invoice).
-2. Pay the BOLT11 invoice from the response.
-3. `POST {mint_url}/v1/mint/bolt11` with the `quote` ID and blinded messages (`outputs`) to mint the ecash tokens.
-4. Use the wallet's send function to serialize the minted tokens as a Cashu token string (starts with `cashuB...`).
+**Simple path (any wallet with Lightning):**
+
+1. `POST https://athenut.com/v1/mint/quote/bolt11` with body `{{"amount": 1, "unit": "xsr"}}`
+2. Pay the returned BOLT11 invoice with any Lightning wallet
+3. `POST https://athenut.com/v1/mint/bolt11` with the quote ID and blinded messages to claim the tokens
+4. Serialize as a Cashu token string (starts with `cashuB...`)
 
 Each token worth 1 xsr pays for one search.
+
+**Using a wallet with custom unit support:**
+
+Wallets like [CDK](https://github.com/cashu/cdk) support custom units and can mint and spend xsr directly without manual API calls.
 
 ## Endpoints
 
@@ -243,6 +277,7 @@ curl -H "Authorization: Payment eyJjaGFsbGVuZ2UiOns..." "{mint_url}/search?q=wha
 - Tokens must be minted from `{mint_url}`.
 - The `X-Cashu` header value is the raw token string (starting with `cashuB...`).
 - For MPP, the `Authorization` header carries a base64url-encoded JSON credential with the payment preimage.
+- For wallets without custom unit support, use the Lightning invoice flow instead.
 
 ## Concepts
 
