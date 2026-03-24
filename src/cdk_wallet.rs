@@ -164,8 +164,8 @@ impl MintPayment for CashuWalletBackend {
 
         tracing::info!(
             quote_id = %quote_id,
-            requested_amount_xsr = amount.to_u64(),
-            invoice_amount_sats = amount_sats.to_u64(),
+            requested_amount_xsr = amount.clone().to_u64(),
+            invoice_amount_sats = amount_sats.clone().to_u64(),
             expiry = quote.expiry,
             "Created incoming mint quote"
         );
@@ -223,15 +223,16 @@ impl MintPayment for CashuWalletBackend {
 
             match result {
                 Ok(_) => {
+                    let amount_u64 = original_amount.to_u64();
                     tracing::info!(
                         quote_id = %quote_id,
-                        amount_xsr = original_amount.to_u64(),
+                        amount_xsr = amount_u64,
                         "Incoming payment mint task completed"
                     );
 
                     Some(WaitPaymentResponse {
                         payment_identifier: PaymentIdentifier::CustomId(quote_id.clone()),
-                        payment_amount: CommonAmount::new(original_amount.to_u64(), unit.clone()),
+                        payment_amount: CommonAmount::new(amount_u64, unit.clone()),
                         payment_id: quote_id,
                     })
                 }
@@ -303,7 +304,10 @@ impl MintPayment for CashuWalletBackend {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         if let Ok(unissued_quotes) = self.wallet.get_unissued_mint_quotes().await {
-            tracing::info!(count = unissued_quotes.len(), "Recovered unissued mint quotes on payment stream startup");
+            tracing::info!(
+                count = unissued_quotes.len(),
+                "Recovered unissued mint quotes on payment stream startup"
+            );
 
             for quote in unissued_quotes {
                 let wallet = Arc::clone(&self.wallet);
@@ -395,7 +399,7 @@ impl MintPayment for CashuWalletBackend {
                             Ok(Some(response)) => {
                                 tracing::info!(
                                     payment_id = %response.payment_id,
-                                    amount = response.payment_amount.to_u64(),
+                                    amount = response.payment_amount.clone().to_u64(),
                                     unit = %response.payment_amount.unit(),
                                     "Emitting incoming payment received event"
                                 );
@@ -418,7 +422,7 @@ impl MintPayment for CashuWalletBackend {
                                         Ok(Some(response)) => {
                                             tracing::info!(
                                                 payment_id = %response.payment_id,
-                                                amount = response.payment_amount.to_u64(),
+                                                amount = response.payment_amount.clone().to_u64(),
                                                 unit = %response.payment_amount.unit(),
                                                 "Draining incoming payment received event"
                                             );
@@ -469,8 +473,8 @@ impl MintPayment for CashuWalletBackend {
             state = ?mint_quote.state,
             amount = mint_quote.amount.map(|amount| amount.to_u64()),
             expiry = mint_quote.expiry,
-            amount_paid = mint_quote.amount_paid.map(|amount| amount.to_u64()),
-            amount_issued = mint_quote.amount_issued.map(|amount| amount.to_u64()),
+            amount_paid = mint_quote.amount_paid.to_u64(),
+            amount_issued = mint_quote.amount_issued.to_u64(),
             "Checked incoming payment status"
         );
 

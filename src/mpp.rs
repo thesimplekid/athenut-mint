@@ -178,7 +178,9 @@ pub async fn generate_challenge(
 
         match result {
             Ok(_) => tracing::info!("MPP invoice paid and tokens minted"),
-            Err(e) => tracing::warn!(error = %e, "MPP invoice processing did not complete after quote creation"),
+            Err(e) => {
+                tracing::warn!(error = %e, "MPP invoice processing did not complete after quote creation")
+            }
         }
     });
 
