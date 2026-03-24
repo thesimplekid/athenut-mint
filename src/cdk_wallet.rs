@@ -419,6 +419,29 @@ impl MintPayment for CashuWalletBackend {
                     payment_id: quote_id.clone(),
                 }])
             }
+            cdk::nuts::MintQuoteState::Issued => {
+                let cost_info = self
+                    .wallet
+                    .localstore
+                    .kv_read(KV_PRIMARY_NAMESPACE, KV_SECONDARY_NAMESPACE, quote_id)
+                    .await
+                    .map_err(|e| cdk_common::payment::Error::from(anyhow::anyhow!(e)))?
+                    .ok_or_else(|| {
+                        cdk_common::payment::Error::from(anyhow::anyhow!("Missing payment info"))
+                    })?;
+
+                let cost_info: IncomingPaymentInfo = serde_json::from_slice(&cost_info)
+                    .map_err(|e| cdk_common::payment::Error::from(anyhow::anyhow!(e)))?;
+
+                Ok(vec![WaitPaymentResponse {
+                    payment_identifier: payment_identifier.clone(),
+                    payment_amount: CommonAmount::new(
+                        cost_info.amount_xsr,
+                        XSR_COMMON_UNIT.clone(),
+                    ),
+                    payment_id: quote_id.clone(),
+                }])
+            }
             _ => Ok(vec![]),
         }
     }

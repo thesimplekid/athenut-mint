@@ -11,7 +11,7 @@ use cdk::nuts::nut18::PaymentRequestBuilder;
 use cdk::nuts::TokenV4;
 use cdk::util::unix_time;
 use cdk_common::melt::MeltQuoteRequest;
-use cdk_common::MeltRequest;
+use cdk_common::{Amount, MeltRequest};
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -451,7 +451,9 @@ async fn handle_cashu_payment(
         }
     };
 
-    if token_amount != 1.into() {
+    let token_amount = token_amount.with_unit(token.unit.clone());
+
+    if token_amount != Amount::new(1, XSR_UNIT.clone()) {
         return Err(payment_required_response());
     }
 
