@@ -3,7 +3,7 @@
 
 set export
 
-server := "http://localhost:3338"
+server := "https://athenut.com"
 
 # Get mint info
 info:
