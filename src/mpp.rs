@@ -142,6 +142,14 @@ pub async fn generate_challenge(
         )
         .await?;
 
+    tracing::info!(
+        quote_id = %quote.id,
+        amount_sats,
+        expiry = quote.expiry,
+        description,
+        "Created MPP challenge mint quote"
+    );
+
     let bolt11_str = quote.request.clone();
     let expires_at = quote.expiry;
 
@@ -153,6 +161,12 @@ pub async fn generate_challenge(
     // Spawn background task to wait for payment and mint tokens
     let wallet = mpp_state.wallet.clone();
     tokio::spawn(async move {
+        tracing::debug!(
+            quote_id = %quote.id,
+            timeout_secs = 500u64,
+            "Waiting for MPP challenge quote to be paid and minted"
+        );
+
         let result = wallet
             .wait_and_mint_quote(
                 quote,
@@ -164,7 +178,7 @@ pub async fn generate_challenge(
 
         match result {
             Ok(_) => tracing::info!("MPP invoice paid and tokens minted"),
-            Err(e) => tracing::warn!("MPP invoice mint failed: {}", e),
+            Err(e) => tracing::warn!(error = %e, "MPP invoice processing did not complete after quote creation"),
         }
     });
 

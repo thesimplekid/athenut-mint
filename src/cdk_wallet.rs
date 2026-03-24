@@ -34,6 +34,7 @@ use crate::{XSR_COMMON_UNIT, XSR_UNIT};
 
 const KV_PRIMARY_NAMESPACE: &str = "athenut";
 const KV_SECONDARY_NAMESPACE: &str = "incoming_payment";
+const MINT_QUOTE_WAIT_TIMEOUT: Duration = Duration::from_secs(500);
 
 #[derive(Serialize, Deserialize)]
 struct IncomingPaymentInfo {
@@ -132,7 +133,6 @@ impl MintPayment for CashuWalletBackend {
         unit: &CommonCurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        println!("got here");
         let unit = unit.clone();
         let amount = match options {
             IncomingPaymentOptions::Bolt11(opts) => Amount::new(opts.amount.to_u64(), unit.clone()),
@@ -162,6 +162,14 @@ impl MintPayment for CashuWalletBackend {
 
         let original_amount = amount.clone();
 
+        tracing::info!(
+            quote_id = %quote_id,
+            requested_amount_xsr = amount.to_u64(),
+            invoice_amount_sats = amount_sats.to_u64(),
+            expiry = quote.expiry,
+            "Created incoming mint quote"
+        );
+
         let payment_info = IncomingPaymentInfo {
             cost_sats: amount_sats.to_u64(),
             amount_xsr: amount.to_u64(),
@@ -179,28 +187,58 @@ impl MintPayment for CashuWalletBackend {
             .await
             .map_err(|e| cdk_common::payment::Error::Lightning(Box::new(e)))?;
 
+        tracing::debug!(
+            quote_id = %quote_id,
+            cost_sats = payment_info.cost_sats,
+            amount_xsr = payment_info.amount_xsr,
+            "Stored incoming payment info in local KV"
+        );
+
         let wallet = self.wallet.clone();
 
         let expiry = Some(quote.expiry);
         let request = quote.request.clone();
 
+        tracing::debug!(
+            quote_id = %quote_id,
+            timeout_secs = MINT_QUOTE_WAIT_TIMEOUT.as_secs(),
+            "Spawning incoming payment mint task"
+        );
+
         let handle = tokio::spawn(async move {
+            tracing::debug!(
+                quote_id = %quote_id,
+                timeout_secs = MINT_QUOTE_WAIT_TIMEOUT.as_secs(),
+                "Waiting for incoming mint quote to become claimable"
+            );
+
             let result = wallet
                 .wait_and_mint_quote(
                     quote,
                     Default::default(),
                     Default::default(),
-                    Duration::from_secs(500),
+                    MINT_QUOTE_WAIT_TIMEOUT,
                 )
                 .await;
 
             match result {
-                Ok(_) => Some(WaitPaymentResponse {
-                    payment_identifier: PaymentIdentifier::CustomId(quote_id.clone()),
-                    payment_amount: CommonAmount::new(original_amount.to_u64(), unit.clone()),
-                    payment_id: quote_id,
-                }),
-                Err(_) => None,
+                Ok(_) => {
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        amount_xsr = original_amount.to_u64(),
+                        "Incoming payment mint task completed"
+                    );
+
+                    Some(WaitPaymentResponse {
+                        payment_identifier: PaymentIdentifier::CustomId(quote_id.clone()),
+                        payment_amount: CommonAmount::new(original_amount.to_u64(), unit.clone()),
+                        payment_id: quote_id,
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!(quote_id = %quote_id, error = %e, "Incoming payment mint task failed");
+                    None
+                }
             }
         });
 
@@ -265,21 +303,31 @@ impl MintPayment for CashuWalletBackend {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         if let Ok(unissued_quotes) = self.wallet.get_unissued_mint_quotes().await {
+            tracing::info!(count = unissued_quotes.len(), "Recovered unissued mint quotes on payment stream startup");
+
             for quote in unissued_quotes {
                 let wallet = Arc::clone(&self.wallet);
                 let handle = tokio::spawn(async move {
                     let quote_id = quote.id.clone();
+                    tracing::debug!(
+                        quote_id = %quote_id,
+                        timeout_secs = MINT_QUOTE_WAIT_TIMEOUT.as_secs(),
+                        "Retrying recovered unissued mint quote"
+                    );
+
                     let result = wallet
                         .wait_and_mint_quote(
                             quote,
                             Default::default(),
                             Default::default(),
-                            Duration::from_secs(5),
+                            MINT_QUOTE_WAIT_TIMEOUT,
                         )
                         .await;
 
                     match result {
                         Ok(_) => {
+                            tracing::info!(quote_id = %quote_id, "Recovered incoming payment mint task completed");
+
                             let cost_info = wallet
                                 .localstore
                                 .kv_read(KV_PRIMARY_NAMESPACE, KV_SECONDARY_NAMESPACE, &quote_id)
@@ -306,7 +354,10 @@ impl MintPayment for CashuWalletBackend {
                                 payment_id: quote_id,
                             })
                         }
-                        Err(_) => None,
+                        Err(e) => {
+                            tracing::warn!(quote_id = %quote_id, error = %e, "Recovered incoming payment mint task failed");
+                            None
+                        }
                     }
                 });
 
@@ -340,8 +391,20 @@ impl MintPayment for CashuWalletBackend {
                 tokio::select! {
                     // A spawned payment task completed
                     Some(result) = pending.next() => {
-                        if let Ok(Some(response)) = result {
-                            yield Event::PaymentReceived(response);
+                        match result {
+                            Ok(Some(response)) => {
+                                tracing::info!(
+                                    payment_id = %response.payment_id,
+                                    amount = response.payment_amount.to_u64(),
+                                    unit = %response.payment_amount.unit(),
+                                    "Emitting incoming payment received event"
+                                );
+                                yield Event::PaymentReceived(response);
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Incoming payment task join failed");
+                            }
                         }
                     }
                     // A new payment handle arrived from the channel
@@ -351,8 +414,20 @@ impl MintPayment for CashuWalletBackend {
                             None => {
                                 // Sender dropped — drain remaining futures
                                 while let Some(result) = pending.next().await {
-                                    if let Ok(Some(response)) = result {
-                                        yield Event::PaymentReceived(response);
+                                    match result {
+                                        Ok(Some(response)) => {
+                                            tracing::info!(
+                                                payment_id = %response.payment_id,
+                                                amount = response.payment_amount.to_u64(),
+                                                unit = %response.payment_amount.unit(),
+                                                "Draining incoming payment received event"
+                                            );
+                                            yield Event::PaymentReceived(response);
+                                        }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "Incoming payment task join failed while draining");
+                                        }
                                     }
                                 }
                                 break;
@@ -389,13 +464,27 @@ impl MintPayment for CashuWalletBackend {
             .await
             .map_err(|e| cdk_common::payment::Error::Lightning(Box::new(e)))?;
 
+        tracing::info!(
+            quote_id = %quote_id,
+            state = ?mint_quote.state,
+            amount = mint_quote.amount.map(|amount| amount.to_u64()),
+            expiry = mint_quote.expiry,
+            amount_paid = mint_quote.amount_paid.map(|amount| amount.to_u64()),
+            amount_issued = mint_quote.amount_issued.map(|amount| amount.to_u64()),
+            "Checked incoming payment status"
+        );
+
         match mint_quote.state {
             cdk::nuts::MintQuoteState::Paid => {
+                tracing::info!(quote_id = %quote_id, "Mint quote is paid; attempting to mint proofs");
+
                 let _receive_amount = self
                     .wallet
                     .mint(quote_id, SplitTarget::default(), None)
                     .await
                     .map_err(|e| cdk_common::payment::Error::Lightning(Box::new(e)))?;
+
+                tracing::info!(quote_id = %quote_id, "Minted proofs for paid incoming quote");
 
                 let cost_info = self
                     .wallet
@@ -420,6 +509,8 @@ impl MintPayment for CashuWalletBackend {
                 }])
             }
             cdk::nuts::MintQuoteState::Issued => {
+                tracing::info!(quote_id = %quote_id, "Mint quote already issued; returning success without re-minting");
+
                 let cost_info = self
                     .wallet
                     .localstore
@@ -442,7 +533,10 @@ impl MintPayment for CashuWalletBackend {
                     payment_id: quote_id.clone(),
                 }])
             }
-            _ => Ok(vec![]),
+            _ => {
+                tracing::debug!(quote_id = %quote_id, state = ?mint_quote.state, "Mint quote not yet payable to caller");
+                Ok(vec![])
+            }
         }
     }
 
